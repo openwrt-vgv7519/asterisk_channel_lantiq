@@ -28,6 +28,7 @@
 #include "asterisk/module.h"
 
 /* linux includes */
+#include <fcntl.h>
 #include <sys/stat.h>
 
 /* tapi includes */
@@ -42,13 +43,18 @@
 #define TAPI_ERROR			-1
 #define TAPI_OK				0
 
-int32_t ch_fd[TAPI_AUDIO_PORT_NUM];
+/* tapi tones */
+#define TAPI_TONE_LOCALE_NONE                   32
+#define TAPI_TONE_LOCALE_BUSY_CODE              33
+#define TAPI_TONE_LOCALE_CONGESTION_CODE        34
+#define TAPI_TONE_LOCALE_DIAL_CODE              35
+#define TAPI_TONE_LOCALE_RING_CODE              36
+#define TAPI_TONE_LOCALE_WAITING_CODE           37
 
 typedef struct
 { 
 	int32_t dev_fd; 
 	int32_t ch_fd[TAPI_AUDIO_PORT_NUM]; 
-	int8_t data2phone_map[TAPI_AUDIO_PORT_NUM]; 
 } tapi_ctx; 
 
 tapi_ctx dev_ctx;
@@ -64,42 +70,46 @@ static const struct ast_channel_tech tapi_tech = {
 	.description	= tdesc,
 };
 
-/* TODO: make this also int8_t */
+AST_MUTEX_DEFINE_STATIC(interface_lock);
+AST_MUTEX_DEFINE_STATIC(ioctl_lock);
+
 static int32_t
-tapi_dev_open(char* dev_path, const int32_t ch_num)
+tapi_dev_open(const char *dev_path, const int32_t ch_num)
 {
-        char devname[128] = { 0 };
-        sprintf(devname,"%s%u%u", dev_path, 1, ch_num);
-        return open((const char*)devname, 0x1103, 0644);
+        char devname[FILENAME_MAX];
+        memset(devname, 0, sizeof(devname));
+        sprintf(devname,"%s%u%u\0", dev_path, 1, ch_num);
+ast_log(LOG_ERROR, "tapi_dev_open : %s\n", devname);
+        return open((const char*)devname, O_RDWR, 0644);
 }
 
-static int8_t
+static int32_t
 tapi_dev_binary_buffer_create(const char *path, uint8_t **ppBuf, uint32_t *pBufSz)
 {
-        int8_t status = TAPI_OK;
         FILE *fd;
         struct stat file_stat;
+        int32_t status = TAPI_OK;
 
         fd = fopen(path, "rb");
         if (fd == NULL) {
-                ast_log(LOG_ERROR, "binary file %s open failed!\n", path);
+                ast_log(LOG_ERROR, "binary file %s open failed\n", path);
                 return TAPI_ERROR;
         }
 
         if (stat(path, &file_stat) != 0) {
-                ast_log(LOG_ERROR, "file %s statistics get failed!\n", path);
+                ast_log(LOG_ERROR, "file %s statistics get failed\n", path);
                 return TAPI_ERROR;
         }
 
         *ppBuf = malloc(file_stat.st_size);
         if (*ppBuf == NULL) {
-                ast_log(LOG_ERROR, "binary file %s memory allocation failed!\n", path);
+                ast_log(LOG_ERROR, "binary file %s memory allocation failed\n", path);
                 status = TAPI_ERROR;
                 goto on_exit;
         }
 
         if (fread (*ppBuf, sizeof(uint8_t), file_stat.st_size, fd) <= 0) {
-                ast_log(LOG_ERROR, "file %s read failed!\n", path);
+                ast_log(LOG_ERROR, "file %s read failed\n", path);
                 status = TAPI_ERROR;
                 goto on_exit;
         }
@@ -123,10 +133,10 @@ tapi_dev_binary_buffer_delete(uint8_t *pBuf)
                 free(pBuf);
 }
 
-static int8_t
+static int32_t
 tapi_dev_firmware_download(int32_t fd, const char *path)
 {
-        int32_t status = TAPI_OK;
+        int32_t status;
         uint8_t *pFirmware = NULL;
         uint32_t binSz = 0;
         VMMC_IO_INIT vmmc_io_init;
@@ -142,8 +152,10 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
         vmmc_io_init.pram_size = binSz;
 
         status = ioctl(fd, FIO_FW_DOWNLOAD, &vmmc_io_init);
-        if (status != TAPI_OK)
+        if (status != TAPI_OK) {
                 ast_log(LOG_ERROR, "FIO_FW_DOWNLOAD ioctl failed!\n");
+                return TAPI_ERROR;
+        }
 
         tapi_dev_binary_buffer_delete(pFirmware);
 
@@ -151,100 +163,115 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
 }
 
 
-static int load_module(void)
+static int
+load_module(void)
 {
 	/* TODO: make this debug error */
 	ast_log(LOG_ERROR, "entered load_module\n");
 
-        int8_t status;
-        uint8_t c, hook_status;
-        IFX_TAPI_TONE_t tone;
-        IFX_TAPI_DEV_START_CFG_t tapistart;
-        IFX_TAPI_MAP_DATA_t datamap;
-        IFX_TAPI_ENC_CFG_t enc_cfg;
-        IFX_TAPI_LINE_VOLUME_t line_vol;
-        IFX_TAPI_WLEC_CFG_t lec_cfg;
-        IFX_TAPI_JB_CFG_t jb_cfg;
-        IFX_TAPI_CID_CFG_t cid_cfg;
+	IFX_TAPI_TONE_t tone;
+	IFX_TAPI_DEV_START_CFG_t dev_start;
+	IFX_TAPI_MAP_DATA_t map_data;
+	IFX_TAPI_ENC_CFG_t enc_cfg;
+	IFX_TAPI_LINE_VOLUME_t line_vol;
+	IFX_TAPI_WLEC_CFG_t lec_cfg;
+	IFX_TAPI_JB_CFG_t jb_cfg;
+	IFX_TAPI_CID_CFG_t cid_cfg;
+	int32_t status;
+	uint8_t c, hook_status;
 
-        /* Open device */
-        dev_ctx.dev_fd = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, 0);
-
-        if (dev_ctx.dev_fd < 0) {
-                ast_log(LOG_ERROR, "tapi device open failed!\n");
-                return TAPI_ERROR;
-        }
-
-        for (c = 0; c < TAPI_AUDIO_PORT_NUM; c++) {
-		ch_fd[c] = dev_ctx.ch_fd[c] = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, TAPI_AUDIO_PORT_NUM - c);
-
-                if (dev_ctx.dev_fd < 0) {
-                        ast_log(LOG_ERROR, "tapi channel%d open failed!\n", c);
-                        return TAPI_ERROR;
-                }
-//                if (tapi_channel_revert)
-//                        dev_ctx.data2phone_map[c] = c & 0x1 ? 1 : 0;
-//                else
-                        dev_ctx.data2phone_map[c] = c & 0x1 ? 0 : 1;
-        }
-
-        status = tapi_dev_firmware_download(dev_ctx.dev_fd, TAPI_LL_DEV_FIRMWARE_NAME);
-        if (status != TAPI_OK) {
-                ast_log(LOG_ERROR, "voice firmware download failed!\n");
-                return TAPI_ERROR;
-        }
-
-	memset(&tapistart, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
-	tapistart.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
-
-	/* Start TAPI */
-	status = ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &tapistart);
-	if (status != TAPI_OK) {
-		ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed");
-		return TAPI_ERROR;
+	if (ast_mutex_lock(&interface_lock)) {
+		ast_log(LOG_ERROR, "unable to lock interface list\n");
+		return AST_MODULE_LOAD_FAILURE;
 	}
 
-	for (c = 1; c < TAPI_AUDIO_PORT_NUM; c++) {
-		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
-		status = ioctl(ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone);
-		if (status != TAPI_OK)
-			 ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed!\n", c);
-		/* Perform mapping */
-		memset(&datamap, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-		datamap.nDstCh = dev_ctx.data2phone_map[c];
-		datamap.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+	/* open device */
+	dev_ctx.dev_fd = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, 0);
 
-		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &datamap);
+	if (dev_ctx.dev_fd < 0) {
+		ast_log(LOG_ERROR, "tapi device open function failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
+	for (c = 0; c < TAPI_AUDIO_PORT_NUM; c++) {
+		dev_ctx.ch_fd[c] = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, TAPI_AUDIO_PORT_NUM - c);
+
+		if (dev_ctx.ch_fd[c] < 0) {
+			ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+	}
+
+	status = ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0);
+	if (status != TAPI_OK) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
+	status = tapi_dev_firmware_download(dev_ctx.dev_fd, TAPI_LL_DEV_FIRMWARE_NAME);
+	if (status != TAPI_OK) {
+		ast_log(LOG_ERROR, "voice firmware download failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
+	memset(&dev_start, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
+	dev_start.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
+
+	/* Start TAPI */
+	status = ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &dev_start);
+	if (status != TAPI_OK) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
+
+	/* tones */
+	memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+	for (c = 0; c < TAPI_AUDIO_PORT_NUM; c++) {
+//		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone);
+//		if (status != TAPI_OK) {
+//			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
+//			return AST_MODULE_LOAD_FAILURE;
+//		}
+
+		/* perform mapping */
+		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
+		map_data.nDstCh = c & 0x1 ? 0 : 1;
+		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+
+		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &map_data);
 		if (status != TAPI_OK) {
 			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_ADD %d failed\n", c);
-			return TAPI_ERROR;
+			return AST_MODULE_LOAD_FAILURE;
 		}
 
 		/* Set Line feed */
 		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY);
 		if (status != TAPI_OK) {
 			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
-			return TAPI_ERROR;
+			return AST_MODULE_LOAD_FAILURE;
 		}
 
+
+		/* ring demo */
+		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_STOP, 0);
+		if (status != TAPI_OK) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_STOP %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+		status = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_START, 0);
+		if (status != TAPI_OK) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_START %d failed!\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 	}
 
-        status = ioctl(ch_fd[0], IFX_TAPI_RING_START, 0);
-        if (status != TAPI_OK) {
-                ast_log(LOG_ERROR, "IFX_TAPI_RING_START 0 failed!\n");
-//                return TAPI_ERROR;
-        }
+	ast_mutex_unlock(&interface_lock);
 
-        status = ioctl(ch_fd[1], IFX_TAPI_RING_START, 0);
-        if (status != TAPI_OK) {
-                ast_log(LOG_ERROR, "IFX_TAPI_RING_START 1 failed!\n");
-//               return TAPI_ERROR;
-        }
-
-	return 0;
+	return AST_MODULE_LOAD_SUCCESS;
 }
 
-static int unload_module(void)
+static int
+unload_module(void)
 {
 	/* TODO: make this debug error */
 	ast_log(LOG_ERROR, "entered unload_module\n");
