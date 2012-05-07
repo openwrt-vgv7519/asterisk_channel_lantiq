@@ -940,7 +940,7 @@ tapi_dev_event_on_hook(int c)
         }
 
         if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
+                ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
                 return -1;
         }
 
@@ -979,7 +979,7 @@ tapi_dev_event_off_hook(int c)
                 return -1;
         }
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
+        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
                 ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
                 return -1;
         }
@@ -996,21 +996,19 @@ tapi_dev_event_handler()
         unsigned int i;
 
         for (i = 0; i < dev_ctx.channels ; i++) {
-                memset (&event, 0, sizeof(event));
-                event.ch = i;
-
 		if (ast_mutex_lock(&iflock)) {
 			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 			break;
 		}
 
+                memset (&event, 0, sizeof(event));
+                event.ch = i;
                 if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
+			continue;
+		if (event.id == IFX_TAPI_EVENT_NONE)
 			continue;
 
 		ast_mutex_unlock(&iflock);
-
-		if (event.id == IFX_TAPI_EVENT_NONE)
-			continue;
 
 		switch(event.id) {
 			case IFX_TAPI_EVENT_FXS_ONHOOK:
@@ -1050,13 +1048,19 @@ tapi_events_monitor(void *data)
 #endif
 
 	while (monitor) {
+		if (ast_mutex_lock(&monlock)) {
+			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
+			break;
+		}
+
                 if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
 			continue;
 
 		if (fds[0].revents == POLLIN) {
 			tapi_dev_event_handler();
-			break;
 		}
+
+		ast_mutex_unlock(&monlock);
 
 #ifdef SKIP_DATA_HANDLER
                 if (fds[1].revents == POLLIN) {
