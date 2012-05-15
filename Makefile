@@ -325,6 +325,8 @@ CONFIGURE_ARGS+= \
 EXTRA_CFLAGS+= $(TARGET_CPPFLAGS)
 EXTRA_LDFLAGS+= $(TARGET_LDFLAGS)
 
+TARGET_CFLAGS+= -I$(STAGING_DIR)/usr/include/drv_tapi
+
 define Build/Prepare
 	$(call Build/Prepare/Default)
 	$(CP) ./src/* $(PKG_BUILD_DIR)/
