@@ -52,8 +52,8 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 #define TAPI_AUDIO_PORT_NUM_MAX		2
 #define TAPI_LL_DEV_BASE_PATH		"/dev/vmmc"
-#define TAPI_LL_DEV_FIRMWARE_NAME	"/lib/firmware/danube_firmware.bin"
-#define TAPI_LL_BBD_NAME		"/lib/firmware/danube_bbd_fxs.bin"
+#define TAPI_LL_DEV_FIRMWARE_NAME	"/lib/firmware/vr9_firmware.bin"
+#define TAPI_LL_BBD_NAME		"/lib/firmware/vr9_bbd_fxs.bin"
 
 #define TAPI_LL_DEV_SELECT_TIMEOUT_MS	2000
 
