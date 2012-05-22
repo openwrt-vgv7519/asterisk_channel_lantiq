@@ -322,6 +322,8 @@ CONFIGURE_ARGS+= \
 	--with-sounds-cache="$(DL_DIR)" \
 	--disable-xmldoc
 
+TARGET_CFLAGS += -ggdb3 
+
 EXTRA_CFLAGS+= $(TARGET_CPPFLAGS)
 EXTRA_LDFLAGS+= $(TARGET_LDFLAGS)
 
