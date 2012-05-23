@@ -6,6 +6,7 @@
  *
  * Luka Perkov <openwrt@lukaperkov.net>
  * John Crispin <blogic@openwrt.org>
+ * Andrej Vlašić <andrej.vlasic0@gmail.com>
  *
  * See http://www.asterisk.org for more information about
  * the Asterisk project. Please do not directly contact
@@ -24,6 +25,7 @@
  *
  * \author Luka Perkov <openwrt@lukaperkov.net>
  * \author John Crispin <blogic@openwrt.org>
+ * \author Andrej Vlašić <andrej.vlasic0@gmail.com>
  * 
  * \ingroup channel_drivers
  */
@@ -51,9 +53,6 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <drv_vmmc/vmmc_io.h>
 
 #define TAPI_AUDIO_PORT_NUM_MAX		2
-#define TAPI_LL_DEV_BASE_PATH		"/dev/vmmc"
-#define TAPI_LL_DEV_FIRMWARE_NAME	"/lib/firmware/danube_firmware.bin"
-#define TAPI_LL_BBD_NAME		"/lib/firmware/danube_bbd_fxs.bin"
 
 #define TAPI_LL_DEV_SELECT_TIMEOUT_MS	2000
 
@@ -81,7 +80,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 #define DEFAULT_CALLER_ID "Unknown"
 #define PHONE_MAX_BUF 480
-#define DEFAULT_GAIN 0x100
+#define DEFAULT_GAIN 0x0
 
 static const char config[] = "tapi.conf";
 
@@ -96,6 +95,10 @@ static int echocancel = AEC_OFF;
 static int silencesupression = 0;
 
 static format_t prefformat = AST_FORMAT_G729A | AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW;
+
+static char firmware_filename[64] = "/lib/firmware/danube_firmware.bin";
+static char bbd_filename[64] = "/lib/firmware/danube_bbd_fxs.bin";
+static char base_path[64] = "/dev/vmmc";
 
 /* Protect the interface list (of tapi_pvt's) */
 AST_MUTEX_DEFINE_STATIC(iflock);
@@ -1018,7 +1021,14 @@ tapi_dev_event_handler()
 				tapi_dev_event_off_hook(i);
 				break;
 			case IFX_TAPI_EVENT_DTMF_DIGIT:
-				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DIGIT: %s\n", i, event.data.dtmf.ascii);
+				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DTMF DIGIT: %c\n", i, (char)event.data.dtmf.ascii);
+				break;
+			case IFX_TAPI_EVENT_PULSE_DIGIT:
+				if (event.data.pulse.digit == 0xB) {
+					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0');
+				} else {
+					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0' + (char)event.data.pulse.digit);
+				}
 				break;
 			case IFX_TAPI_EVENT_COD_DEC_CHG:
 			case IFX_TAPI_EVENT_TONE_GEN_END:
@@ -1031,7 +1041,7 @@ tapi_dev_event_handler()
         }
 }
 
-static void
+static void *
 tapi_events_monitor(void *data)
 {
         ast_verbose("TAPI thread started\n");
@@ -1078,6 +1088,7 @@ tapi_events_monitor(void *data)
                 }
 #endif
         }
+	return NULL;
 }
 
 static int restart_monitor()
@@ -1168,7 +1179,23 @@ static int load_module(void)
 	struct ast_config *cfg;
 	struct ast_variable *v;
 	struct tapi_pvt *tmp;
-	int txgain = DEFAULT_GAIN, rxgain = DEFAULT_GAIN; /* default gain 1.0 */
+	int txgain = DEFAULT_GAIN;
+	int rxgain = DEFAULT_GAIN;
+	int wlec_type = 0;
+	int wlec_nlp = 0;
+	int wlec_nbfe = 0;
+	int wlec_nbne = 0;
+	int wlec_wbne = 0;
+	int jb_type = IFX_TAPI_JB_TYPE_ADAPTIVE;
+	int jb_pckadpt = IFX_TAPI_JB_PKT_ADAPT_VOICE;
+	int jb_localadpt = IFX_TAPI_JB_LOCAL_ADAPT_DEFAULT;
+	int jb_scaling = 0x10;
+	int jb_initialsize = 0x2d0;
+	int jb_minsize = 0x50;
+	int jb_maxsize = 0x5a0;
+	int cid_type = IFX_TAPI_CID_STD_TELCORDIA;
+	int vad_type = IFX_TAPI_ENC_VAD_NOVAD;
+	dev_ctx.channels = TAPI_AUDIO_PORT_NUM_MAX;
 	struct ast_flags config_flags = { 0 };
 
 	if ((cfg = ast_config_load(config, config_flags)) == CONFIG_STATUS_FILEINVALID) {
@@ -1187,7 +1214,6 @@ static int load_module(void)
 		return AST_MODULE_LOAD_FAILURE;
 	}
 
-	dev_ctx.channels = TAPI_AUDIO_PORT_NUM_MAX;
 	for (v = ast_variable_browse(cfg, "interfaces"); v; v = v->next) {
 		if (!strcasecmp(v->name, "channels")) {
 			dev_ctx.channels = atoi(v->value);
@@ -1196,8 +1222,142 @@ static int load_module(void)
 				ast_config_destroy(cfg);
 				return AST_MODULE_LOAD_DECLINE;
 			}
+		} else if (!strcasecmp(v->name, "firmwarefilename")) {
+			ast_copy_string(firmware_filename, v->value, sizeof(firmware_filename));
+		} else if (!strcasecmp(v->name, "bbdfilename")) {
+			ast_copy_string(bbd_filename, v->value, sizeof(bbd_filename));
+		} else if (!strcasecmp(v->name, "basepath")) {
+			ast_copy_string(base_path, v->value, sizeof(base_path));
 		}
 	}
+
+	for (v = ast_variable_browse(cfg, "general"); v; v = v->next) {
+		if (!strcasecmp(v->name, "rxgain")) {
+			rxgain = atoi(v->value);
+			if (!rxgain) {
+				rxgain = DEFAULT_GAIN;
+				ast_log(LOG_WARNING, "Invalid rxgain: %s, using default.\n", v->value);
+			}
+		} else if (!strcasecmp(v->name, "txgain")) {
+			txgain = atoi(v->value);
+			if (!txgain) {
+				txgain = DEFAULT_GAIN;
+				ast_log(LOG_WARNING, "Invalid txgain: %s, using default.\n", v->value);
+			}
+		} else if (!strcasecmp(v->name, "echocancel")) {
+			if (!strcasecmp(v->value, "off")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_OFF;
+			} else if (!strcasecmp(v->value, "nlec")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_NE;
+				if (!strcasecmp(v->name, "echocancelfixedwindowsize")) {
+					wlec_nbne = atoi(v->value);
+				}
+			} else if (!strcasecmp(v->value, "wlec")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_NFE;
+				if (!strcasecmp(v->name, "echocancelnfemovingwindowsize")) {
+					wlec_nbfe = atoi(v->value);
+				} else if (!strcasecmp(v->name, "echocancelfixedwindowsize")) {
+					wlec_nbne = atoi(v->value);
+				} else if (!strcasecmp(v->name, "echocancelwidefixedwindowsize")) {
+					wlec_wbne = atoi(v->value);
+				}
+			} else if (!strcasecmp(v->value, "nees")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_NE_ES;
+			} else if (!strcasecmp(v->value, "nfees")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_NFE_ES;
+			} else if (!strcasecmp(v->value, "es")) {
+				wlec_type = IFX_TAPI_WLEC_TYPE_ES;
+			} else {
+				wlec_type = IFX_TAPI_WLEC_TYPE_OFF;
+				ast_log(LOG_ERROR, "Unknown echo cancellation type '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		} else if (!strcasecmp(v->name, "echocancelnlp")) {
+			if (!strcasecmp(v->value, "on")) {
+				wlec_nlp = IFX_TAPI_WLEC_NLP_ON;
+			} else if (!strcasecmp(v->value, "off")) {
+				wlec_nlp = IFX_TAPI_WLEC_NLP_OFF;
+			} else {
+				ast_log(LOG_ERROR, "Unknown echo cancellation nlp '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		} else if (!strcasecmp(v->name, "jitterbuffertype")) {
+			if (!strcasecmp(v->value, "fixed")) {
+				jb_type = IFX_TAPI_JB_TYPE_FIXED;
+			} else if (!strcasecmp(v->value, "adaptive")) {
+				jb_type = IFX_TAPI_JB_TYPE_ADAPTIVE;
+				jb_localadpt = IFX_TAPI_JB_LOCAL_ADAPT_DEFAULT;
+				if (!strcasecmp(v->name, "jitterbufferadaptation")) {
+					if (!strcasecmp(v->value, "on")) {
+						jb_localadpt = IFX_TAPI_JB_LOCAL_ADAPT_ON;
+					} else if (!strcasecmp(v->value, "off")) {
+						jb_localadpt = IFX_TAPI_JB_LOCAL_ADAPT_OFF;
+					}
+				} else if (!strcasecmp(v->name, "jitterbufferscalling")) {
+					jb_scaling = atoi(v->value);
+				} else if (!strcasecmp(v->name, "jitterbufferinitialsize")) {
+					jb_initialsize = atoi(v->value);
+				} else if (!strcasecmp(v->name, "jitterbufferminsize")) {
+					jb_minsize = atoi(v->value);
+				} else if (!strcasecmp(v->name, "jitterbuffermaxsize")) {
+					jb_maxsize = atoi(v->value);
+				}
+			} else {
+				ast_log(LOG_ERROR, "Unknown jitter buffer type '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		} else if (!strcasecmp(v->name, "jitterbufferpackettype")) {
+			if (!strcasecmp(v->value, "voice")) {
+				jb_pckadpt = IFX_TAPI_JB_PKT_ADAPT_VOICE;
+			} else if (!strcasecmp(v->value, "data")) {
+				jb_pckadpt = IFX_TAPI_JB_PKT_ADAPT_DATA;
+			} else if (!strcasecmp(v->value, "datanorep")) {
+				jb_pckadpt = IFX_TAPI_JB_PKT_ADAPT_DATA_NO_REP;
+			} else {
+				ast_log(LOG_ERROR, "Unknown jitter buffer packet adaptation type '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		} else if (!strcasecmp(v->name, "calleridtype")) {
+			if (!strcasecmp(v->value, "telecordia")) {
+				cid_type = IFX_TAPI_CID_STD_TELCORDIA;
+			} else if (!strcasecmp(v->value, "etsifsk")) {
+				cid_type = IFX_TAPI_CID_STD_ETSI_FSK;
+			} else if (!strcasecmp(v->value, "etsidtmf")) {
+				cid_type = IFX_TAPI_CID_STD_ETSI_DTMF;
+			} else if (!strcasecmp(v->value, "sin")) {
+				cid_type = IFX_TAPI_CID_STD_SIN;
+			} else if (!strcasecmp(v->value, "ntt")) {
+				cid_type = IFX_TAPI_CID_STD_NTT;
+			} else if (!strcasecmp(v->value, "kpndtmf")) {
+				cid_type = IFX_TAPI_CID_STD_KPN_DTMF;
+			} else if (!strcasecmp(v->value, "kpndtmffsk")) {
+				cid_type = IFX_TAPI_CID_STD_KPN_DTMF_FSK;
+			} else {
+				ast_log(LOG_ERROR, "Unknown caller id type '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		} else if (!strcasecmp(v->name, "voiceactivitydetection")) {
+			if (!strcasecmp(v->value, "on")) {
+				vad_type = IFX_TAPI_ENC_VAD_ON;
+			} else if (!strcasecmp(v->value, "g711")) {
+				vad_type = IFX_TAPI_ENC_VAD_G711;
+			} else if (!strcasecmp(v->value, "cng")) {
+				vad_type = IFX_TAPI_ENC_VAD_CNG_ONLY;
+			} else if (!strcasecmp(v->value, "sc")) {
+				vad_type = IFX_TAPI_ENC_VAD_SC_ONLY;
+			} else {
+				ast_log(LOG_ERROR, "Unknown voice activity detection value '%s'\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
+		}
+	}
+
 	ast_mutex_unlock(&iflock);
 
 	if (ast_channel_register(&tapi_tech)) {
@@ -1214,14 +1374,14 @@ static int load_module(void)
         IFX_TAPI_MAP_DATA_t map_data;
         IFX_TAPI_ENC_CFG_t enc_cfg;
         IFX_TAPI_LINE_VOLUME_t line_vol;
-        IFX_TAPI_WLEC_CFG_t lec_cfg;
+        IFX_TAPI_WLEC_CFG_t wlec_cfg;
         IFX_TAPI_JB_CFG_t jb_cfg;
         IFX_TAPI_CID_CFG_t cid_cfg;
         int32_t status;
         uint8_t c;
 
         /* open device */
-        dev_ctx.dev_fd = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, 0);
+        dev_ctx.dev_fd = tapi_dev_open(base_path, 0);
 
         if (dev_ctx.dev_fd < 0) {
                 ast_log(LOG_ERROR, "tapi device open function failed\n");
@@ -1229,7 +1389,7 @@ static int load_module(void)
         }
 
         for (c = 0; c < dev_ctx.channels ; c++) {
-                dev_ctx.ch_fd[c] = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, c + 1);
+                dev_ctx.ch_fd[c] = tapi_dev_open(base_path, c + 1);
 
                 if (dev_ctx.ch_fd[c] < 0) {
                         ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
@@ -1237,7 +1397,7 @@ static int load_module(void)
                 }
         }
 
-        if (tapi_dev_firmware_download(dev_ctx.dev_fd, TAPI_LL_DEV_FIRMWARE_NAME)) {
+        if (tapi_dev_firmware_download(dev_ctx.dev_fd, firmware_filename)) {
                 ast_log(LOG_ERROR, "voice firmware download failed\n");
                 return AST_MODULE_LOAD_FAILURE;
         }
@@ -1258,6 +1418,7 @@ static int load_module(void)
 
         /* tones */
         memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+
         for (c = 0; c < dev_ctx.channels ; c++) {
 #ifdef TODO
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
@@ -1292,6 +1453,69 @@ static int load_module(void)
                         ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
                         return AST_MODULE_LOAD_FAILURE;
                 }
+
+		/* Configure encoder for linear stream */
+		memset(&enc_cfg, 0x0, sizeof(IFX_TAPI_ENC_CFG_t));
+		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* set volume */
+		memset(&line_vol, 0, sizeof(line_vol));
+		line_vol.nGainRx = rxgain;
+		line_vol.nGainTx = txgain;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_PHONE_VOLUME_SET, &line_vol)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_PHONE_VOLUME_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Configure line echo canceller */
+		memset(&wlec_cfg, 0, sizeof(wlec_cfg));
+	        wlec_cfg.nType = wlec_type;
+	        wlec_cfg.bNlp = wlec_nlp;
+		wlec_cfg.nNBFEwindow = wlec_nbfe;
+	        wlec_cfg.nNBNEwindow = wlec_nbne;
+		wlec_cfg.nWBNEwindow = wlec_wbne;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_WLEC_PHONE_CFG_SET, &wlec_cfg)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_WLEC_PHONE_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Configure jitter buffer */
+		memset(&jb_cfg, 0, sizeof(jb_cfg));
+		jb_cfg.nJbType = jb_type;
+		jb_cfg.nPckAdpt = jb_pckadpt;
+		jb_cfg.nLocalAdpt = jb_localadpt;
+		jb_cfg.nScaling = jb_scaling;
+		jb_cfg.nInitialSize = jb_initialsize;
+		jb_cfg.nMinSize = jb_minsize;
+		jb_cfg.nMaxSize = jb_maxsize;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_JB_CFG_SET, &jb_cfg)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_JB_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Configure Caller ID type */
+		memset(&cid_cfg, 0, sizeof(cid_cfg));
+		cid_cfg.nStandard = cid_type;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_CID_CFG_SET, &cid_cfg)) {
+			ast_log(LOG_ERROR, "IIFX_TAPI_CID_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Configure voice activity detection */
+                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_VAD_CFG_SET, vad_type)) {
+                        ast_log(LOG_ERROR, "IFX_TAPI_ENC_VAD_CFG_SET %d failed\n", c);
+                        return AST_MODULE_LOAD_FAILURE;
+		}
         }
 
 	restart_monitor();
