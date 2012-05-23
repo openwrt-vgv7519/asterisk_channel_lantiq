@@ -389,7 +389,28 @@ tapi_dev_event_on_hook(int c)
 }
 
 static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause) {
-	ast_debug(1, "TAPI: phone_requester()\n");
+	char buf[256];
+	
+	struct ast_channel *tmp = NULL;
+	int channel;
+
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+
+	/* check for correct data argument */
+	if (ast_strlen_zero(data)) {
+		ast_log(LOG_ERROR, "Unable to create channel with empty destination.\n");
+		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
+		return NULL;
+	}
+
+	/* get our channel number */
+	channel = atoi((char*) data);
+	if (channel < 1 || channel > dev_ctx.channels) {
+		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (char*) data);
+		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
+		return NULL;
+	}
+
 	return NULL;
 }
 
