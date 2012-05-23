@@ -322,8 +322,6 @@ CONFIGURE_ARGS+= \
 	--with-sounds-cache="$(DL_DIR)" \
 	--disable-xmldoc
 
-TARGET_CFLAGS += -ggdb3 
-
 EXTRA_CFLAGS+= $(TARGET_CPPFLAGS)
 EXTRA_LDFLAGS+= $(TARGET_LDFLAGS)
 
@@ -576,8 +574,14 @@ define Package/asterisk18-mysql/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/asterisk/modules/res_config_mysql.so $(1)/usr/lib/asterisk/modules/
 endef
 
+define Package/asterisk18-chan-tapi/conffiles
+/etc/asterisk/tapi.conf
+endef
+
 define Package/asterisk18-chan-tapi/install
 	$(INSTALL_DIR) $(1)/usr/lib/asterisk/modules
+	$(INSTALL_DIR) $(1)/etc/asterisk
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/etc/asterisk/tapi.conf $(1)/etc/asterisk/
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/asterisk/modules/chan_tapi.so $(1)/usr/lib/asterisk/modules/
 endef
 
