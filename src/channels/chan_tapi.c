@@ -1031,7 +1031,7 @@ tapi_dev_event_handler()
         }
 }
 
-static void
+static void *
 tapi_events_monitor(void *data)
 {
         ast_verbose("TAPI thread started\n");
@@ -1078,6 +1078,8 @@ tapi_events_monitor(void *data)
                 }
 #endif
         }
+
+	return NULL;
 }
 
 static int restart_monitor()
