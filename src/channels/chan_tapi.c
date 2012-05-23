@@ -1018,7 +1018,7 @@ tapi_dev_event_handler()
 				tapi_dev_event_off_hook(i);
 				break;
 			case IFX_TAPI_EVENT_DTMF_DIGIT:
-				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DIGIT: %s\n", i, event.data.dtmf.ascii);
+				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DIGIT: %c\n", i, (char)event.data.dtmf.ascii);
 				break;
 			case IFX_TAPI_EVENT_COD_DEC_CHG:
 			case IFX_TAPI_EVENT_TONE_GEN_END:
