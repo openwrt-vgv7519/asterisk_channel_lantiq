@@ -450,7 +450,7 @@ tapi_dev_event_off_hook(int c)
 }
 
 static void
-tapi_dev_event_handler()
+tapi_dev_event_handler(void)
 {
 	IFX_TAPI_EVENT_t event;
 	unsigned int i;
