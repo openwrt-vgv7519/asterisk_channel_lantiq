@@ -352,36 +352,36 @@ static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 static int
 tapi_dev_event_on_hook(int c)
 {
-        ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
+	ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
 
 	if (ast_mutex_lock(&iflock)) {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
+		return -1;
+	}
 
 	ast_mutex_unlock(&iflock);
 
-        return 0;
+	return 0;
 }
 
 static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause) {
@@ -392,53 +392,53 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 static int
 tapi_dev_event_off_hook(int c)
 {
-        ast_log(LOG_ERROR, "TAPI: OFFHOOK\n");
+	ast_log(LOG_ERROR, "TAPI: OFFHOOK\n");
 
 	if (ast_mutex_lock(&iflock)) {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
+		return -1;
+	}
 
 	ast_mutex_unlock(&iflock);
 
-        return 0;
+	return 0;
 }
 
 static void
 tapi_dev_event_handler()
 {
-        IFX_TAPI_EVENT_t event;
-        unsigned int i;
+	IFX_TAPI_EVENT_t event;
+	unsigned int i;
 
-        for (i = 0; i < dev_ctx.channels ; i++) {
+	for (i = 0; i < dev_ctx.channels ; i++) {
 		if (ast_mutex_lock(&iflock)) {
 			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 			break;
 		}
 
-                memset (&event, 0, sizeof(event));
-                event.ch = i;
-                if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
+		memset (&event, 0, sizeof(event));
+		event.ch = i;
+		if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
 			continue;
 		if (event.id == IFX_TAPI_EVENT_NONE)
 			continue;
@@ -463,23 +463,23 @@ tapi_dev_event_handler()
 				ast_log(LOG_ERROR, "Unable TAPI event %08X\n", event.id);
 				break;
 		}
-        }
+	}
 }
 
 static void *
 tapi_events_monitor(void *data)
 {
-        ast_verbose("TAPI thread started\n");
+	ast_verbose("TAPI thread started\n");
 
-        struct pollfd fds[3];
+	struct pollfd fds[3];
 
-        fds[0].fd = dev_ctx.dev_fd;
-        fds[0].events = POLLIN;
+	fds[0].fd = dev_ctx.dev_fd;
+	fds[0].events = POLLIN;
 #ifdef SKIP_DATA_HANDLER
-        fds[1].fd = dev_ctx.ch_fd[0];
-        fds[1].events = POLLIN;
-        fds[2].fd = dev_ctx.ch_fd[1];
-        fds[2].events = POLLIN;
+	fds[1].fd = dev_ctx.ch_fd[0];
+	fds[1].events = POLLIN;
+	fds[2].fd = dev_ctx.ch_fd[1];
+	fds[2].events = POLLIN;
 #endif
 
 	while (monitor) {
@@ -488,7 +488,7 @@ tapi_events_monitor(void *data)
 			break;
 		}
 
-                if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
+		if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
 			continue;
 
 		if (fds[0].revents == POLLIN) {
@@ -498,21 +498,21 @@ tapi_events_monitor(void *data)
 		ast_mutex_unlock(&monlock);
 
 #ifdef SKIP_DATA_HANDLER
-                if (fds[1].revents == POLLIN) {
-                        if (tapi_dev_data_handler(&streams[0])) {
+		if (fds[1].revents == POLLIN) {
+			if (tapi_dev_data_handler(&streams[0])) {
 				ast_verbose("TAPI: data handler failed\n");
-                                break;
-                        }
-                }
+				break;
+			}
+		}
 
-                if (fds[2].revents == POLLIN) {
-                        if (tapi_dev_data_handler(&streams[1])) {
+		if (fds[2].revents == POLLIN) {
+			if (tapi_dev_data_handler(&streams[1])) {
 				ast_verbose("TAPI: data handler failed\n");
-                                break;
-                        }
-                }
+				break;
+			}
+		}
 #endif
-        }
+	}
 
 	return NULL;
 }
@@ -645,57 +645,57 @@ static int load_module(void)
 	}
 	ast_config_destroy(cfg);
 	
-        /* tapi */
-        IFX_TAPI_TONE_t tone;
-        IFX_TAPI_DEV_START_CFG_t dev_start;
-        IFX_TAPI_MAP_DATA_t map_data;
-        IFX_TAPI_ENC_CFG_t enc_cfg;
-        IFX_TAPI_LINE_VOLUME_t line_vol;
-        IFX_TAPI_WLEC_CFG_t lec_cfg;
-        IFX_TAPI_JB_CFG_t jb_cfg;
-        IFX_TAPI_CID_CFG_t cid_cfg;
-        int32_t status;
-        uint8_t c;
+	/* tapi */
+	IFX_TAPI_TONE_t tone;
+	IFX_TAPI_DEV_START_CFG_t dev_start;
+	IFX_TAPI_MAP_DATA_t map_data;
+	IFX_TAPI_ENC_CFG_t enc_cfg;
+	IFX_TAPI_LINE_VOLUME_t line_vol;
+	IFX_TAPI_WLEC_CFG_t lec_cfg;
+	IFX_TAPI_JB_CFG_t jb_cfg;
+	IFX_TAPI_CID_CFG_t cid_cfg;
+	int32_t status;
+	uint8_t c;
 
-        /* open device */
-        dev_ctx.dev_fd = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, 0);
+	/* open device */
+	dev_ctx.dev_fd = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, 0);
 
-        if (dev_ctx.dev_fd < 0) {
-                ast_log(LOG_ERROR, "tapi device open function failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (dev_ctx.dev_fd < 0) {
+		ast_log(LOG_ERROR, "tapi device open function failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        for (c = 0; c < dev_ctx.channels ; c++) {
-                dev_ctx.ch_fd[c] = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, c + 1);
+	for (c = 0; c < dev_ctx.channels ; c++) {
+		dev_ctx.ch_fd[c] = tapi_dev_open(TAPI_LL_DEV_BASE_PATH, c + 1);
 
-                if (dev_ctx.ch_fd[c] < 0) {
-                        ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
-        }
+		if (dev_ctx.ch_fd[c] < 0) {
+			ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+	}
 
-        if (tapi_dev_firmware_download(dev_ctx.dev_fd, TAPI_LL_DEV_FIRMWARE_NAME)) {
-                ast_log(LOG_ERROR, "voice firmware download failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (tapi_dev_firmware_download(dev_ctx.dev_fd, TAPI_LL_DEV_FIRMWARE_NAME)) {
+		ast_log(LOG_ERROR, "voice firmware download failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        memset(&dev_start, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
-        dev_start.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
+	memset(&dev_start, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
+	dev_start.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
 
-        /* Start TAPI */
-        if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &dev_start)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	/* Start TAPI */
+	if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &dev_start)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        /* tones */
-        memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
-        for (c = 0; c < dev_ctx.channels ; c++) {
+	/* tones */
+	memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+	for (c = 0; c < dev_ctx.channels ; c++) {
 #ifdef TODO
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
@@ -703,33 +703,33 @@ static int load_module(void)
 		}
 #endif
 
-                /* perform mapping */
+		/* perform mapping */
 #ifdef DONT_KNOW_IF_NEEDED
-                memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-                map_data.nDstCh = c;
-                map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
+		map_data.nDstCh = c;
+		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
 
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_REMOVE, &map_data)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_REMOVE %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_REMOVE, &map_data)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_REMOVE %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 #endif
 
-                memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-                map_data.nDstCh = c;
-                map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
+		map_data.nDstCh = c;
+		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
 
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &map_data)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_ADD %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &map_data)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_ADD %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 
-                /* set line feed */
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
-        }
+		/* set line feed */
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+	}
 
 	restart_monitor();
 	return AST_MODULE_LOAD_SUCCESS;
