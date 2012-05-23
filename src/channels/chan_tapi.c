@@ -625,6 +625,37 @@ static int unload_module(void)
 	return 0;
 }
 
+static struct tapi_pvt *tapi_allocate_pvt(void) {
+	struct tapi_pvt *tmp;
+
+	tmp = ast_calloc(1, sizeof(*tmp));
+	if (tmp) {
+		tmp->owner = NULL;
+		tmp->next = NULL;
+	}
+
+	return tmp;
+}
+
+static void tapi_create_pvts(struct tapi_pvt *p) {
+	int i;
+	struct tapi_pvt *tmp = p;
+	struct tapi_pvt *tmp_next;
+
+	for (i=0 ; i<dev_ctx.channels ; i++) {
+		tmp_next = tapi_allocate_pvt();
+		if (tmp != NULL) {
+			tmp->next = tmp_next;
+			tmp_next->next = NULL;
+		} else {
+			iflist = tmp_next;
+			tmp    = tmp_next;
+			tmp->next = NULL;
+		}
+	}
+}
+
+
 static int load_module(void)
 {
 	struct ast_config *cfg;
@@ -660,6 +691,9 @@ static int load_module(void)
 			}
 		}
 	}
+
+	tapi_create_pvts(iflist);
+
 	ast_mutex_unlock(&iflock);
 
 	if (ast_channel_register(&tapi_tech)) {
