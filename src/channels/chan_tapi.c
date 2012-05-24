@@ -129,10 +129,21 @@ static int restart_monitor(void);
 #define MODE_FXS        4
 #define MODE_SIGMA      5
 
+enum channel_state {
+	ONHOOK,
+	OFFHOOK,
+	DIALING,
+	INCALL,
+	CALL_ENDED,
+	RINGING,
+	UNKNOWN
+};
+
 static struct tapi_pvt {
-	struct ast_channel *owner;		/* Channel we belong to, possibly NULL */
-	struct tapi_pvt *next;			/* Next channel in list */
-	int port_id;
+	struct ast_channel *owner;		/* Channel we belong to, possibly NULL 	*/
+	struct tapi_pvt *next;			/* Next channel in list 				*/
+	int port_id;					/* Physical port number of this object 	*/
+	int channel_state;
 } *iflist = NULL;
 
 typedef struct
@@ -188,6 +199,22 @@ tapi_dev_open(const char *dev_path, const int32_t ch_num)
 	return open((const char*)dev_name, O_RDWR, 0644);
 }
 
+static struct tapi_pvt* tapi_get_next_pvt(struct tapi_pvt *p) {
+	if (p->next)
+		return p->next;
+	else
+		return NULL;
+}
+
+
+static struct tapi_pvt* tapi_get_cid_pvt(struct tapi_pvt *p, int port_id)
+{
+	while(p) {
+		if (p->port_id == port_id) return p;
+		p = tapi_get_next_pvt(p);
+	}
+	return NULL;
+}
 
 static void
 tapi_start_ringing(int port) {
@@ -197,6 +224,21 @@ tapi_start_ringing(int port) {
 static void
 tapi_stop_ringing(int port) {
 	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_STOP, 0);
+}
+
+static enum channel_state tapi_get_hookstatus(int port) {
+	IFX_TAPI_LINE_HOOK_STATUS_GET_t status = 0;
+
+	if (ioctl(dev_ctx.ch_fd[port], IFX_TAPI_LINE_HOOK_STATUS_GET, &status)) {
+		ast_log(LOG_ERROR, "cannot get hookstate!\n");
+        return UNKNOWN;
+	}
+
+	if (status) {
+		return ONHOOK;
+	} else {
+		return OFFHOOK;
+	}
 }
 
 static int
@@ -304,12 +346,27 @@ static int phone_call(struct ast_channel *ast, char *dest, int timeout)
 {
 	ast_debug(1, "TAPI: phone_call()\n");
 
+	ast_mutex_lock(&iflock);
+	
+	ast_debug(1, "TAPI: phone_call() after lock\n");
+
 	struct tapi_pvt *pvt = ast->tech_pvt;
 
-	tapi_start_ringing(pvt->port_id);
+	if (pvt->channel_state == ONHOOK) {
+		ast_debug(1, "TAPI: phone_call(): port %i ringing.\n", pvt->port_id);
+		tapi_start_ringing(pvt->port_id);
+		pvt->channel_state = RINGING;
 
-	ast_setstate(ast, AST_STATE_RINGING);
-	ast_queue_control(ast, AST_CONTROL_RINGING);
+		ast_setstate(ast, AST_STATE_RINGING);
+		ast_queue_control(ast, AST_CONTROL_RINGING);
+
+	} else {
+		ast_debug(1, "TAPI: phone_call(): port %i busy.\n", pvt->port_id);
+		ast_setstate(ast, AST_STATE_BUSY);
+		ast_queue_control(ast, AST_CONTROL_BUSY);
+	}
+		
+	ast_mutex_unlock(&iflock);
 
 	return 0;
 }
@@ -393,16 +450,7 @@ static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 	return -1;
 }
 
-static int
-tapi_dev_event_on_hook(int c)
-{
-	ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
-
-	if (ast_mutex_lock(&iflock)) {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return -1;
-	}
-
+static int go_onhook(int c) {
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
 		return -1;
@@ -423,9 +471,64 @@ tapi_dev_event_on_hook(int c)
 		return -1;
 	}
 
+	return 0;
+}
+
+static int end_dialing(int c) {
+	ast_debug(1, "%s", __FUNCTION__);
+	return 0;
+}
+
+static int end_call(int c) {
+	ast_debug(1, "%s", __FUNCTION__);
+	return 0;
+}
+
+static int
+tapi_dev_event_on_hook(int c)
+{
+	ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
+
+	if (ast_mutex_lock(&iflock)) {
+		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
+		return -1;
+	}
+
+	int ret = 0;
+	switch (iflist[c].channel_state) {
+		case OFFHOOK: 
+			{
+				ret = go_onhook(c);
+				break;
+			}
+		case DIALING: 
+			{
+				ret = end_dialing(c);
+				break;
+			}
+		case INCALL: 
+			{
+				ret = end_call(c);
+				break;
+			}
+		case CALL_ENDED:
+			{
+				ret = go_onhook(c);
+				break;
+			}
+		default:
+			{
+				ast_debug(1, "TAPI: tapi_dev_event_on_hook(): invalid state change.\n");
+				ret = -1;
+				break;
+			}
+	}
+
+	iflist[c].channel_state = ONHOOK;
+
 	ast_mutex_unlock(&iflock);
 
-	return 0;
+	return ret;
 }
 
 static struct ast_channel *tapi_new(int state, int port_id, char *ext, char *ctx) {
@@ -455,6 +558,11 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 
 	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
 
+	if (ast_mutex_lock(&iflock)) {
+		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
+		return NULL;
+	}
+
 	/* check for correct data argument */
 	if (ast_strlen_zero(data)) {
 		ast_log(LOG_ERROR, "Unable to create channel with empty destination.\n");
@@ -472,6 +580,7 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 
 	chan = tapi_new(AST_STATE_DOWN, port_id-1, NULL, NULL);
 
+	ast_mutex_unlock(&iflock);
 	return chan;
 }
 
@@ -484,6 +593,8 @@ tapi_dev_event_off_hook(int c)
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
+	
+	iflist[c].channel_state = OFFHOOK;
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
@@ -517,10 +628,10 @@ tapi_dev_event_handler(void)
 	unsigned int i;
 
 	for (i = 0; i < dev_ctx.channels ; i++) {
-		if (ast_mutex_lock(&iflock)) {
+	/*	if (ast_mutex_lock(&iflock)) {
 			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 			break;
-		}
+		}*/
 
 		memset (&event, 0, sizeof(event));
 		event.ch = i;
@@ -528,9 +639,9 @@ tapi_dev_event_handler(void)
 			continue;
 		if (event.id == IFX_TAPI_EVENT_NONE)
 			continue;
-
+/*
 		ast_mutex_unlock(&iflock);
-
+*/
 		switch(event.id) {
 			case IFX_TAPI_EVENT_FXS_ONHOOK:
 				tapi_dev_event_on_hook(i);
@@ -700,6 +811,7 @@ static struct tapi_pvt *tapi_allocate_pvt(void) {
 	if (tmp) {
 		tmp->owner = NULL;
 		tmp->next = NULL;
+		tmp->channel_state = ONHOOK;
 	}
 
 	return tmp;
@@ -1091,6 +1203,13 @@ static int load_module(void)
 		/* Configure voice activity detection */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_VAD_CFG_SET, vad_type)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_ENC_VAD_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Set initial hook status */
+		iflist[c].channel_state = tapi_get_hookstatus(c);
+		
+		if (iflist[c].channel_state == UNKNOWN) {
 			return AST_MODULE_LOAD_FAILURE;
 		}
 	}
