@@ -132,6 +132,7 @@ static int restart_monitor(void);
 static struct tapi_pvt {
 	struct ast_channel *owner;		/* Channel we belong to, possibly NULL */
 	struct tapi_pvt *next;			/* Next channel in list */
+	int port_id;
 } *iflist = NULL;
 
 typedef struct
@@ -185,6 +186,17 @@ tapi_dev_open(const char *dev_path, const int32_t ch_num)
 	memset(dev_name, 0, sizeof(dev_name));
 	snprintf(dev_name, FILENAME_MAX, "%s%u%u", dev_path, 1, ch_num);
 	return open((const char*)dev_name, O_RDWR, 0644);
+}
+
+
+static void
+tapi_start_ringing(int port) {
+	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_START, 0);
+}
+
+static void
+tapi_stop_ringing(int port) {
+	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_STOP, 0);
 }
 
 static int
@@ -291,12 +303,37 @@ static int phone_digit_end(struct ast_channel *ast, char digit, unsigned int dur
 static int phone_call(struct ast_channel *ast, char *dest, int timeout)
 {
 	ast_debug(1, "TAPI: phone_call()\n");
+
+	struct tapi_pvt *pvt = ast->tech_pvt;
+
+	tapi_start_ringing(pvt->port_id);
+
+	ast_setstate(ast, AST_STATE_RINGING);
+	ast_queue_control(ast, AST_CONTROL_RINGING);
+
 	return 0;
 }
 
 static int phone_hangup(struct ast_channel *ast)
 {
 	ast_debug(1, "TAPI: phone_hangup()\n");
+
+	struct tapi_pvt *pvt = ast->tech_pvt;
+
+	/* lock to prevent simultaneous access with do_monitor thread processing */
+	ast_mutex_lock(&iflock);
+
+	if (ast->_state == AST_STATE_RINGING) {
+		ast_debug(1, "TAPI: phone_hangup(): ast->_state == AST_STATE_RINGING\n");
+	}
+
+	tapi_stop_ringing(pvt->port_id);
+
+	ast_setstate(ast, AST_STATE_DOWN);
+	ast_module_unref(ast_module_info->self);
+	ast->tech_pvt = NULL;
+	ast_mutex_unlock(&iflock);
+
 	return 0;
 }
 
@@ -391,11 +428,30 @@ tapi_dev_event_on_hook(int c)
 	return 0;
 }
 
+static struct ast_channel *tapi_new(int state, int port_id, char *ext, char *ctx) {
+	ast_debug(1, "tapi_new()\n");
+
+	struct ast_channel *chan = NULL;
+
+	struct tapi_pvt *pvt = &iflist[port_id];
+
+	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, port_id, "TAPI/%s", "1");
+
+	chan->tech = &tapi_tech;
+	chan->nativeformats = AST_FORMAT_ULAW;
+	chan->readformat  = AST_FORMAT_ULAW;
+	chan->writeformat = AST_FORMAT_ULAW;
+	chan->tech_pvt = pvt;
+	pvt->owner = chan;
+
+	return chan;
+}
+
 static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause) {
 	char buf[256];
 	
-	struct ast_channel *tmp = NULL;
-	int channel;
+	struct ast_channel *chan = NULL;
+	int port_id = -1;
 
 	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
 
@@ -406,15 +462,17 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 		return NULL;
 	}
 
-	/* get our channel number */
-	channel = atoi((char*) data);
-	if (channel < 1 || channel > dev_ctx.channels) {
+	/* get our port number */
+	port_id = atoi((char*) data);
+	if (port_id < 1 || port_id > dev_ctx.channels) {
 		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (char*) data);
 		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
 		return NULL;
 	}
 
-	return NULL;
+	chan = tapi_new(AST_STATE_DOWN, port_id-1, NULL, NULL);
+
+	return chan;
 }
 
 static int
@@ -631,7 +689,7 @@ static int unload_module(void)
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
-		
+
 	return 0;
 }
 
@@ -657,6 +715,7 @@ static void tapi_create_pvts(struct tapi_pvt *p) {
 		if (tmp != NULL) {
 			tmp->next = tmp_next;
 			tmp_next->next = NULL;
+			tmp->port_id = i;
 		} else {
 			iflist = tmp_next;
 			tmp    = tmp_next;
@@ -919,6 +978,31 @@ static int load_module(void)
 			return AST_MODULE_LOAD_FAILURE;
 		}
 #endif
+
+		/* ringing type */
+		IFX_TAPI_RING_CFG_t ringingType;
+		memset(&ringingType, 0, sizeof(IFX_TAPI_RING_CFG_t));
+		ringingType.nMode = IFX_TAPI_RING_CFG_MODE_INTERNAL_BALANCED;
+		ringingType.nSubmode = IFX_TAPI_RING_CFG_SUBMODE_DC_RNG_TRIP_FAST;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_CFG_SET, (IFX_int32_t) &ringingType)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_CFG_SET failed\n");
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* ring cadence */
+		IFX_char_t data[15] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+								0x00, 0x00, 0x00, 0x00, 0x00,     
+								0x00, 0x00, 0x00, 0x00, 0x00 };
+
+		IFX_TAPI_RING_CADENCE_t ringCadence;
+		memset(&ringCadence, 0, sizeof(IFX_TAPI_RING_CADENCE_t));
+		memcpy(&ringCadence.data, data, sizeof(data));
+		ringCadence.nr = sizeof(data) * 8;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_CADENCE_HR_SET, &ringCadence)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_CADENCE_HR_SET failed\n");
+			return AST_MODULE_LOAD_FAILURE;
+		}
 
 		/* perform mapping */
 #ifdef DONT_KNOW_IF_NEEDED
