@@ -3,10 +3,13 @@
  *
  * Copyright (C) 2012, Luka Perkov
  * Copyright (C) 2012, John Crispin
+ * Copyright (C) 2012, Kaspar Schleiser for T-Labs
+ *                     (Deutsche Telekom Innovation Laboratories)
  *
  * Luka Perkov <openwrt@lukaperkov.net>
  * John Crispin <blogic@openwrt.org>
  * Andrej Vlašić <andrej.vlasic0@gmail.com>
+ * Kaspar Schleiser <kaspar@schleiser.de>
  *
  * See http://www.asterisk.org for more information about
  * the Asterisk project. Please do not directly contact
@@ -26,6 +29,7 @@
  * \author Luka Perkov <openwrt@lukaperkov.net>
  * \author John Crispin <blogic@openwrt.org>
  * \author Andrej Vlašić <andrej.vlasic0@gmail.com>
+ * \author Kaspar Schleiser <kaspar@schleiser.de>
  * 
  * \ingroup channel_drivers
  */
@@ -126,29 +130,9 @@ static int restart_monitor(void);
 #define MODE_SIGMA      5
 
 static struct tapi_pvt {
-	int fd;							/* Raw file descriptor for this device */
 	struct ast_channel *owner;		/* Channel we belong to, possibly NULL */
-	int mode;						/* Is this in the  */
-	format_t lastformat;            /* Last output format */
-	format_t lastinput;             /* Last input format */
-	int ministate;					/* Miniature state, for dialtone mode */
-	char dev[256];					/* Device name */
 	struct tapi_pvt *next;			/* Next channel in list */
-	struct ast_frame fr;			/* Frame */
-	char offset[AST_FRIENDLY_OFFSET];
-	char buf[PHONE_MAX_BUF];					/* Static buffer for reading frames */
-	int obuflen;
-	int dialtone;
-	int txgain, rxgain;             /* gain control for playing, recording  */
-									/* 0x100 - 1.0, 0x200 - 2.0, 0x80 - 0.5 */
-	int cpt;						/* Call Progress Tone playing? */
-	int silencesupression;
-	char context[AST_MAX_EXTENSION];
-	char obuf[PHONE_MAX_BUF * 2];
-	char ext[AST_MAX_EXTENSION];
-	char language[MAX_LANGUAGE];
-	char cid_num[AST_MAX_EXTENSION];
-	char cid_name[AST_MAX_EXTENSION];
+	int port_id;
 } *iflist = NULL;
 
 typedef struct
@@ -174,6 +158,7 @@ static struct ast_frame *phone_exception(struct ast_channel *ast);
 static int phone_send_text(struct ast_channel *ast, const char *text);
 static int phone_fixup(struct ast_channel *old, struct ast_channel *new);
 static int phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
+static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
 
 static const struct ast_channel_tech tapi_tech = {
 	.type = "TAPI",
@@ -190,7 +175,8 @@ static const struct ast_channel_tech tapi_tech = {
 	.write_video = phone_write,
 	.send_text = phone_send_text,
 	.indicate = phone_indicate,
-	.fixup = phone_fixup
+	.fixup = phone_fixup,
+	.requester = phone_requester
 };
 
 static int
@@ -200,6 +186,17 @@ tapi_dev_open(const char *dev_path, const int32_t ch_num)
 	memset(dev_name, 0, sizeof(dev_name));
 	snprintf(dev_name, FILENAME_MAX, "%s%u%u", dev_path, 1, ch_num);
 	return open((const char*)dev_name, O_RDWR, 0644);
+}
+
+
+static void
+tapi_start_ringing(int port) {
+	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_START, 0);
+}
+
+static void
+tapi_stop_ringing(int port) {
+	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_STOP, 0);
 }
 
 static int
@@ -280,272 +277,75 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
 
 static int phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	struct tapi_pvt *p = chan->tech_pvt;
-	int res=-1;
-	ast_debug(1, "Requested indication %d on channel %s\n", condition, chan->name);
-	switch(condition) {
-	case AST_CONTROL_FLASH:
-		ioctl(p->fd, IXJCTL_PSTN_SET_STATE, PSTN_ON_HOOK);
-		usleep(320000);
-		ioctl(p->fd, IXJCTL_PSTN_SET_STATE, PSTN_OFF_HOOK);
-			p->lastformat = -1;
-			res = 0;
-			break;
-	case AST_CONTROL_HOLD:
-		ast_moh_start(chan, data, NULL);
-		break;
-	case AST_CONTROL_UNHOLD:
-		ast_moh_stop(chan);
-		break;
-	case AST_CONTROL_SRCUPDATE:
-		res = 0;
-		break;
-	default:
-		ast_log(LOG_WARNING, "Condition %d is not supported on channel %s\n", condition, chan->name);
-	}
-	return res;
+	ast_debug(1, "TAPI: phone_indicate()\n");
+	return -1;
 }
 
 static int phone_fixup(struct ast_channel *old, struct ast_channel *new)
 {
-	struct tapi_pvt *pvt = old->tech_pvt;
-	if (pvt && pvt->owner == old)
-		pvt->owner = new;
+	ast_debug(1, "TAPI: phone_fixup()\n");
 	return 0;
 }
 
 static int phone_digit_begin(struct ast_channel *chan, char digit)
 {
 	/* XXX Modify this callback to let Asterisk support controlling the length of DTMF */
+	ast_debug(1, "TAPI: phone_digit_begin()\n");
 	return 0;
 }
 
 static int phone_digit_end(struct ast_channel *ast, char digit, unsigned int duration)
 {
-	struct tapi_pvt *p;
-	int outdigit;
-	p = ast->tech_pvt;
-	ast_debug(1, "Dialed %c\n", digit);
-	switch(digit) {
-	case '0':
-	case '1':
-	case '2':
-	case '3':
-	case '4':
-	case '5':
-	case '6':
-	case '7':
-	case '8':
-	case '9':
-		outdigit = digit - '0';
-		break;
-	case '*':
-		outdigit = 11;
-		break;
-	case '#':
-		outdigit = 12;
-		break;
-	case 'f':	/*flash*/
-	case 'F':
-		ioctl(p->fd, IXJCTL_PSTN_SET_STATE, PSTN_ON_HOOK);
-		usleep(320000);
-		ioctl(p->fd, IXJCTL_PSTN_SET_STATE, PSTN_OFF_HOOK);
-		p->lastformat = -1;
-		return 0;
-	default:
-		ast_log(LOG_WARNING, "Unknown digit '%c'\n", digit);
-		return -1;
-	}
-	ast_debug(1, "Dialed %d\n", outdigit);
-	ioctl(p->fd, PHONE_PLAY_TONE, outdigit);
-	p->lastformat = -1;
+	ast_debug(1, "TAPI: phone_digit_end()\n");
 	return 0;
 }
 
 static int phone_call(struct ast_channel *ast, char *dest, int timeout)
 {
-	struct tapi_pvt *p;
+	ast_debug(1, "TAPI: phone_call()\n");
 
-	PHONE_CID cid;
-	struct timeval UtcTime = ast_tvnow();
-	struct ast_tm tm;
-	int start;
+	struct tapi_pvt *pvt = ast->tech_pvt;
 
-	ast_localtime(&UtcTime, &tm, NULL);
+	tapi_start_ringing(pvt->port_id);
 
-	memset(&cid, 0, sizeof(PHONE_CID));
-    snprintf(cid.month, sizeof(cid.month), "%02d",(tm.tm_mon + 1));
-    snprintf(cid.day, sizeof(cid.day),     "%02d", tm.tm_mday);
-    snprintf(cid.hour, sizeof(cid.hour),   "%02d", tm.tm_hour);
-    snprintf(cid.min, sizeof(cid.min),     "%02d", tm.tm_min);
-	/* the standard format of ast->callerid is:  "name" <number>, but not always complete */
-	if (!ast->connected.id.name.valid
-		|| ast_strlen_zero(ast->connected.id.name.str)) {
-		strcpy(cid.name, DEFAULT_CALLER_ID);
-	} else {
-		ast_copy_string(cid.name, ast->connected.id.name.str, sizeof(cid.name));
-	}
-
-	if (ast->connected.id.number.valid && ast->connected.id.number.str) {
-		ast_copy_string(cid.number, ast->connected.id.number.str, sizeof(cid.number));
-	}
-
-	p = ast->tech_pvt;
-
-	if ((ast->_state != AST_STATE_DOWN) && (ast->_state != AST_STATE_RESERVED)) {
-		ast_log(LOG_WARNING, "phone_call called on %s, neither down nor reserved\n", ast->name);
-		return -1;
-	}
-	ast_debug(1, "Ringing %s on %s (%d)\n", dest, ast->name, ast->fds[0]);
-
-	start = IXJ_PHONE_RING_START(cid);
-	if (start == -1)
-		return -1;
-	
-	if (p->mode == MODE_FXS) {
-		char *digit = strchr(dest, '/');
-		if (digit)
-		{
-		  digit++;
-		  while (*digit)
-		    phone_digit_end(ast, *digit++, 0);
-		}
-	}
- 
-  	ast_setstate(ast, AST_STATE_RINGING);
+	ast_setstate(ast, AST_STATE_RINGING);
 	ast_queue_control(ast, AST_CONTROL_RINGING);
+
 	return 0;
 }
 
 static int phone_hangup(struct ast_channel *ast)
 {
-	struct tapi_pvt *p;
-	p = ast->tech_pvt;
-	ast_debug(1, "phone_hangup(%s)\n", ast->name);
-	if (!ast->tech_pvt) {
-		ast_log(LOG_WARNING, "Asked to hangup channel not connected\n");
-		return 0;
+	ast_debug(1, "TAPI: phone_hangup()\n");
+
+	struct tapi_pvt *pvt = ast->tech_pvt;
+
+	/* lock to prevent simultaneous access with do_monitor thread processing */
+	ast_mutex_lock(&iflock);
+
+	if (ast->_state == AST_STATE_RINGING) {
+		ast_debug(1, "TAPI: phone_hangup(): ast->_state == AST_STATE_RINGING\n");
 	}
-	/* XXX Is there anything we can do to really hang up except stop recording? */
+
+	tapi_stop_ringing(pvt->port_id);
+
 	ast_setstate(ast, AST_STATE_DOWN);
-	if (ioctl(p->fd, PHONE_REC_STOP))
-		ast_log(LOG_WARNING, "Failed to stop recording\n");
-	if (ioctl(p->fd, PHONE_PLAY_STOP))
-		ast_log(LOG_WARNING, "Failed to stop playing\n");
-	if (ioctl(p->fd, PHONE_RING_STOP))
-		ast_log(LOG_WARNING, "Failed to stop ringing\n");
-	if (ioctl(p->fd, PHONE_CPT_STOP))
-		ast_log(LOG_WARNING, "Failed to stop sounds\n");
-
-	/* If it's an FXO, hang them up */
-	if (p->mode == MODE_FXO) {
-		if (ioctl(p->fd, PHONE_PSTN_SET_STATE, PSTN_ON_HOOK))
-			ast_debug(1, "ioctl(PHONE_PSTN_SET_STATE) failed on %s (%s)\n",ast->name, strerror(errno));
-	}
-
-	/* If they're off hook, give a busy signal */
-	if (ioctl(p->fd, PHONE_HOOKSTATE)) {
-		ast_debug(1, "Got hunghup, giving busy signal\n");
-		ioctl(p->fd, PHONE_BUSY);
-		p->cpt = 1;
-	}
-	p->lastformat = -1;
-	p->lastinput = -1;
-	p->ministate = 0;
-	p->obuflen = 0;
-	p->dialtone = 0;
-	memset(p->ext, 0, sizeof(p->ext));
-	((struct tapi_pvt *)(ast->tech_pvt))->owner = NULL;
 	ast_module_unref(ast_module_info->self);
-	ast_verb(3, "Hungup '%s'\n", ast->name);
 	ast->tech_pvt = NULL;
-	ast_setstate(ast, AST_STATE_DOWN);
-	restart_monitor();
+	ast_mutex_unlock(&iflock);
+
 	return 0;
 }
 
 static int phone_setup(struct ast_channel *ast)
 {
-	struct tapi_pvt *p;
-	p = ast->tech_pvt;
-	ioctl(p->fd, PHONE_CPT_STOP);
-	/* Nothing to answering really, just start recording */
-	if (ast->rawreadformat == AST_FORMAT_G729A) {
-		/* Prefer g729 */
-		ioctl(p->fd, PHONE_REC_STOP);
-		if (p->lastinput != AST_FORMAT_G729A) {
-			p->lastinput = AST_FORMAT_G729A;
-			if (ioctl(p->fd, PHONE_REC_CODEC, G729)) {
-				ast_log(LOG_WARNING, "Failed to set codec to g729\n");
-				return -1;
-			}
-		}
-        } else if (ast->rawreadformat == AST_FORMAT_G723_1) {
-		ioctl(p->fd, PHONE_REC_STOP);
-		if (p->lastinput != AST_FORMAT_G723_1) {
-			p->lastinput = AST_FORMAT_G723_1;
-			if (ioctl(p->fd, PHONE_REC_CODEC, G723_63)) {
-				ast_log(LOG_WARNING, "Failed to set codec to g723.1\n");
-				return -1;
-			}
-		}
-	} else if (ast->rawreadformat == AST_FORMAT_SLINEAR) {
-		ioctl(p->fd, PHONE_REC_STOP);
-		if (p->lastinput != AST_FORMAT_SLINEAR) {
-			p->lastinput = AST_FORMAT_SLINEAR;
-			if (ioctl(p->fd, PHONE_REC_CODEC, LINEAR16)) {
-				ast_log(LOG_WARNING, "Failed to set codec to signed linear 16\n");
-				return -1;
-			}
-		}
-	} else if (ast->rawreadformat == AST_FORMAT_ULAW) {
-		ioctl(p->fd, PHONE_REC_STOP);
-		if (p->lastinput != AST_FORMAT_ULAW) {
-			p->lastinput = AST_FORMAT_ULAW;
-			if (ioctl(p->fd, PHONE_REC_CODEC, ULAW)) {
-				ast_log(LOG_WARNING, "Failed to set codec to uLaw\n");
-				return -1;
-			}
-		}
-	} else if (p->mode == MODE_FXS) {
-		ioctl(p->fd, PHONE_REC_STOP);
-		if (p->lastinput != ast->rawreadformat) {
-			p->lastinput = ast->rawreadformat;
-			if (ioctl(p->fd, PHONE_REC_CODEC, ast->rawreadformat)) {
-				ast_log(LOG_WARNING, "Failed to set codec to %s\n", 
-					ast_getformatname(ast->rawreadformat));
-				return -1;
-			}
-		}
-	} else {
-		ast_log(LOG_WARNING, "Can't do format %s\n", ast_getformatname(ast->rawreadformat));
-		return -1;
-	}
-	if (ioctl(p->fd, PHONE_REC_START)) {
-		ast_log(LOG_WARNING, "Failed to start recording\n");
-		return -1;
-	}
-	/* set the DTMF times (the default is too short) */
-	ioctl(p->fd, PHONE_SET_TONE_ON_TIME, 300);
-	ioctl(p->fd, PHONE_SET_TONE_OFF_TIME, 200);
+	ast_debug(1, "TAPI: phone_setup()\n");
 	return 0;
 }
 
 static int phone_answer(struct ast_channel *ast)
 {
-	struct tapi_pvt *p;
-	p = ast->tech_pvt;
-	/* In case it's a LineJack, take it off hook */
-	if (p->mode == MODE_FXO) {
-		if (ioctl(p->fd, PHONE_PSTN_SET_STATE, PSTN_OFF_HOOK))
-			ast_debug(1, "ioctl(PHONE_PSTN_SET_STATE) failed on %s (%s)\n", ast->name, strerror(errno));
-		else
-			ast_debug(1, "Took linejack off hook\n");
-	}
-	phone_setup(ast);
-	ast_debug(1, "phone_answer(%s)\n", ast->name);
-	ast->rings = 0;
-	ast_setstate(ast, AST_STATE_UP);
+	ast_debug(1, "TAPI: phone_answer()\n");
 	return 0;
 }
 
@@ -565,448 +365,166 @@ static char phone_2digit(char c)
 
 static struct ast_frame  *phone_exception(struct ast_channel *ast)
 {
-	int res;
-	union telephony_exception phonee;
-	struct tapi_pvt *p = ast->tech_pvt;
-	char digit;
-
-	/* Some nice norms */
-	p->fr.datalen = 0;
-	p->fr.samples = 0;
-	p->fr.data.ptr =  NULL;
-	p->fr.src = "Phone";
-	p->fr.offset = 0;
-	p->fr.mallocd=0;
-	p->fr.delivery = ast_tv(0,0);
-	
-	phonee.bytes = ioctl(p->fd, PHONE_EXCEPTION);
-	if (phonee.bits.dtmf_ready)  {
-		ast_debug(1, "phone_exception(): DTMF\n");
-	
-		/* We've got a digit -- Just handle this nicely and easily */
-		digit =  ioctl(p->fd, PHONE_GET_DTMF_ASCII);
-		p->fr.subclass.integer = digit;
-		p->fr.frametype = AST_FRAME_DTMF;
-		return &p->fr;
-	}
-	if (phonee.bits.hookstate) {
-		ast_debug(1, "Hookstate changed\n");
-		res = ioctl(p->fd, PHONE_HOOKSTATE);
-		/* See if we've gone on hook, if so, notify by returning NULL */
-		ast_debug(1, "New hookstate: %d\n", res);
-		if (!res && (p->mode != MODE_FXO))
-			return NULL;
-		else {
-			if (ast->_state == AST_STATE_RINGING) {
-				/* They've picked up the phone */
-				p->fr.frametype = AST_FRAME_CONTROL;
-				p->fr.subclass.integer = AST_CONTROL_ANSWER;
-				phone_setup(ast);
-				ast_setstate(ast, AST_STATE_UP);
-				return &p->fr;
-			}  else 
-				ast_log(LOG_WARNING, "Got off hook in weird state %d\n", ast->_state);
-		}
-	}
-#if 1
-	if (phonee.bits.pstn_ring)
-		ast_verbose("Unit is ringing\n");
-	if (phonee.bits.caller_id) {
-		ast_verbose("We have caller ID\n");
-	}
-	if (phonee.bits.pstn_wink)
-		ast_verbose("Detected Wink\n");
-#endif
-	/* Strange -- nothing there.. */
-	p->fr.frametype = AST_FRAME_NULL;
-	p->fr.subclass.integer = 0;
-	return &p->fr;
+	ast_debug(1, "TAPI: phone_exception()\n");
+	return NULL;
 }
 
 static struct ast_frame  *phone_read(struct ast_channel *ast)
 {
-	int res;
-	struct tapi_pvt *p = ast->tech_pvt;
-	
-
-	/* Some nice norms */
-	p->fr.datalen = 0;
-	p->fr.samples = 0;
-	p->fr.data.ptr =  NULL;
-	p->fr.src = "Phone";
-	p->fr.offset = 0;
-	p->fr.mallocd=0;
-	p->fr.delivery = ast_tv(0,0);
-
-	/* Try to read some data... */
-	CHECK_BLOCKING(ast);
-	res = read(p->fd, p->buf, PHONE_MAX_BUF);
-	ast_clear_flag(ast, AST_FLAG_BLOCKING);
-	if (res < 0) {
-#if 0
-		if (errno == EAGAIN) {
-			ast_log(LOG_WARNING, "Null frame received\n");
-			p->fr.frametype = AST_FRAME_NULL;
-			p->fr.subclass = 0;
-			return &p->fr;
-		}
-#endif
-		ast_log(LOG_WARNING, "Error reading: %s\n", strerror(errno));
-		return NULL;
-	}
-	p->fr.data.ptr = p->buf;
-	if (p->mode != MODE_FXS)
-	switch(p->buf[0] & 0x3) {
-	case '0':
-	case '1':
-		/* Normal */
-		break;
-	case '2':
-	case '3':
-		/* VAD/CNG, only send two words */
-		res = 4;
-		break;
-	}
-	p->fr.samples = 240;
-	p->fr.datalen = res;
-	p->fr.frametype = p->lastinput <= AST_FORMAT_AUDIO_MASK ?
-                          AST_FRAME_VOICE : 
-			  p->lastinput <= AST_FORMAT_PNG ? AST_FRAME_IMAGE 
-			  : AST_FRAME_VIDEO;
-	p->fr.subclass.codec = p->lastinput;
-	p->fr.offset = AST_FRIENDLY_OFFSET;
-	/* Byteswap from little-endian to native-endian */
-	if (p->fr.subclass.codec == AST_FORMAT_SLINEAR)
-		ast_frame_byteswap_le(&p->fr);
-	return &p->fr;
+	ast_debug(1, "TAPI: phone_read()\n");
+	return NULL;
 }
 
 static int phone_write_buf(struct tapi_pvt *p, const char *buf, int len, int frlen, int swap)
 {
-	int res;
-	/* Store as much of the buffer as we can, then write fixed frames */
-	int space = sizeof(p->obuf) - p->obuflen;
-	/* Make sure we have enough buffer space to store the frame */
-	if (space < len)
-		len = space;
-	if (swap)
-		ast_swapcopy_samples(p->obuf+p->obuflen, buf, len/2);
-	else
-		memcpy(p->obuf + p->obuflen, buf, len);
-	p->obuflen += len;
-	while(p->obuflen > frlen) {
-		res = write(p->fd, p->obuf, frlen);
-		if (res != frlen) {
-			if (res < 1) {
-/*
- * Card is in non-blocking mode now and it works well now, but there are
- * lot of messages like this. So, this message is temporarily disabled.
- */
-				return 0;
-			} else {
-				ast_log(LOG_WARNING, "Only wrote %d of %d bytes\n", res, frlen);
-			}
-		}
-		p->obuflen -= frlen;
-		/* Move memory if necessary */
-		if (p->obuflen) 
-			memmove(p->obuf, p->obuf + frlen, p->obuflen);
-	}
-	return len;
+	ast_debug(1, "TAPI: phone_write_buf()\n");
+	return -1;
 }
 
 static int phone_send_text(struct ast_channel *ast, const char *text)
 {
-    int length = strlen(text);
-    return phone_write_buf(ast->tech_pvt, text, length, length, 0) == 
-           length ? 0 : -1;
+	ast_debug(1, "TAPI: phone_send_text()\n");
+	return -1;
 }
 
 static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 {
-	struct tapi_pvt *p = ast->tech_pvt;
-	int res;
-	int maxfr=0;
-	char *pos;
-	int sofar;
-	int expected;
-	int codecset = 0;
-	char tmpbuf[4];
-	/* Write a frame of (presumably voice) data */
-	if (frame->frametype != AST_FRAME_VOICE && p->mode != MODE_FXS) {
-		if (frame->frametype != AST_FRAME_IMAGE)
-			ast_log(LOG_WARNING, "Don't know what to do with  frame type '%d'\n", frame->frametype);
-		return 0;
-	}
-	if (!(frame->subclass.codec &
-		(AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW | AST_FORMAT_G729A)) && 
-	    p->mode != MODE_FXS) {
-		ast_log(LOG_WARNING, "Cannot handle frames in %s format\n", ast_getformatname(frame->subclass.codec));
-		return -1;
-	}
-#if 0
-	/* If we're not in up mode, go into up mode now */
-	if (ast->_state != AST_STATE_UP) {
-		ast_setstate(ast, AST_STATE_UP);
-		phone_setup(ast);
-	}
-#else
-	if (ast->_state != AST_STATE_UP) {
-		/* Don't try tos end audio on-hook */
-		return 0;
-	}
-#endif	
-	if (frame->subclass.codec == AST_FORMAT_G729A) {
-		if (p->lastformat != AST_FORMAT_G729A) {
-			ioctl(p->fd, PHONE_PLAY_STOP);
-			ioctl(p->fd, PHONE_REC_STOP);
-			if (ioctl(p->fd, PHONE_PLAY_CODEC, G729)) {
-				ast_log(LOG_WARNING, "Unable to set G729 mode\n");
-				return -1;
-			}
-			if (ioctl(p->fd, PHONE_REC_CODEC, G729)) {
-				ast_log(LOG_WARNING, "Unable to set G729 mode\n");
-				return -1;
-			}
-			p->lastformat = AST_FORMAT_G729A;
-			p->lastinput = AST_FORMAT_G729A;
-			/* Reset output buffer */
-			p->obuflen = 0;
-			codecset = 1;
-		}
-		if (frame->datalen > 80) {
-			ast_log(LOG_WARNING, "Frame size too large for G.729 (%d bytes)\n", frame->datalen);
-			return -1;
-		}
-		maxfr = 80;
-        } else if (frame->subclass.codec == AST_FORMAT_G723_1) {
-		if (p->lastformat != AST_FORMAT_G723_1) {
-			ioctl(p->fd, PHONE_PLAY_STOP);
-			ioctl(p->fd, PHONE_REC_STOP);
-			if (ioctl(p->fd, PHONE_PLAY_CODEC, G723_63)) {
-				ast_log(LOG_WARNING, "Unable to set G723.1 mode\n");
-				return -1;
-			}
-			if (ioctl(p->fd, PHONE_REC_CODEC, G723_63)) {
-				ast_log(LOG_WARNING, "Unable to set G723.1 mode\n");
-				return -1;
-			}
-			p->lastformat = AST_FORMAT_G723_1;
-			p->lastinput = AST_FORMAT_G723_1;
-			/* Reset output buffer */
-			p->obuflen = 0;
-			codecset = 1;
-		}
-		if (frame->datalen > 24) {
-			ast_log(LOG_WARNING, "Frame size too large for G.723.1 (%d bytes)\n", frame->datalen);
-			return -1;
-		}
-		maxfr = 24;
-	} else if (frame->subclass.codec == AST_FORMAT_SLINEAR) {
-		if (p->lastformat != AST_FORMAT_SLINEAR) {
-			ioctl(p->fd, PHONE_PLAY_STOP);
-			ioctl(p->fd, PHONE_REC_STOP);
-			if (ioctl(p->fd, PHONE_PLAY_CODEC, LINEAR16)) {
-				ast_log(LOG_WARNING, "Unable to set 16-bit linear mode\n");
-				return -1;
-			}
-			if (ioctl(p->fd, PHONE_REC_CODEC, LINEAR16)) {
-				ast_log(LOG_WARNING, "Unable to set 16-bit linear mode\n");
-				return -1;
-			}
-			p->lastformat = AST_FORMAT_SLINEAR;
-			p->lastinput = AST_FORMAT_SLINEAR;
-			codecset = 1;
-			/* Reset output buffer */
-			p->obuflen = 0;
-		}
-		maxfr = 480;
-	} else if (frame->subclass.codec == AST_FORMAT_ULAW) {
-		if (p->lastformat != AST_FORMAT_ULAW) {
-			ioctl(p->fd, PHONE_PLAY_STOP);
-			ioctl(p->fd, PHONE_REC_STOP);
-			if (ioctl(p->fd, PHONE_PLAY_CODEC, ULAW)) {
-				ast_log(LOG_WARNING, "Unable to set uLaw mode\n");
-				return -1;
-			}
-			if (ioctl(p->fd, PHONE_REC_CODEC, ULAW)) {
-				ast_log(LOG_WARNING, "Unable to set uLaw mode\n");
-				return -1;
-			}
-			p->lastformat = AST_FORMAT_ULAW;
-			p->lastinput = AST_FORMAT_ULAW;
-			codecset = 1;
-			/* Reset output buffer */
-			p->obuflen = 0;
-		}
-		maxfr = 240;
-	} else {
-		if (p->lastformat != frame->subclass.codec) {
-			ioctl(p->fd, PHONE_PLAY_STOP);
-			ioctl(p->fd, PHONE_REC_STOP);
-			if (ioctl(p->fd, PHONE_PLAY_CODEC, (int) frame->subclass.codec)) {
-				ast_log(LOG_WARNING, "Unable to set %s mode\n",
-					ast_getformatname(frame->subclass.codec));
-				return -1;
-			}
-			if (ioctl(p->fd, PHONE_REC_CODEC, (int) frame->subclass.codec)) {
-				ast_log(LOG_WARNING, "Unable to set %s mode\n",
-					ast_getformatname(frame->subclass.codec));
-				return -1;
-			}
-			p->lastformat = frame->subclass.codec;
-			p->lastinput = frame->subclass.codec;
-			codecset = 1;
-			/* Reset output buffer */
-			p->obuflen = 0;
-		}
-		maxfr = 480;
-	}
- 	if (codecset) {
-		ioctl(p->fd, PHONE_REC_DEPTH, 3);
-		ioctl(p->fd, PHONE_PLAY_DEPTH, 3);
-		if (ioctl(p->fd, PHONE_PLAY_START)) {
-			ast_log(LOG_WARNING, "Failed to start playback\n");
-			return -1;
-		}
-		if (ioctl(p->fd, PHONE_REC_START)) {
-			ast_log(LOG_WARNING, "Failed to start recording\n");
-			return -1;
-		}
-	}
-	/* If we get here, we have a frame of Appropriate data */
-	sofar = 0;
-	pos = frame->data.ptr;
-	while(sofar < frame->datalen) {
-		/* Write in no more than maxfr sized frames */
-		expected = frame->datalen - sofar;
-		if (maxfr < expected)
-			expected = maxfr;
-		/* XXX Internet Phone Jack does not handle the 4-byte VAD frame properly! XXX 
-		   we have to pad it to 24 bytes still.  */
-		if (frame->datalen == 4) {
-			if (p->silencesupression) {
-				memcpy(tmpbuf, frame->data.ptr, 4);
-				expected = 24;
-				res = phone_write_buf(p, tmpbuf, expected, maxfr, 0);
-			}
-			res = 4;
-			expected=4;
-		} else {
-			int swap = 0;
-#if __BYTE_ORDER == __BIG_ENDIAN
-			if (frame->subclass.codec == AST_FORMAT_SLINEAR)
-				swap = 1; /* Swap big-endian samples to little-endian as we copy */
-#endif
-			res = phone_write_buf(p, pos, expected, maxfr, swap);
-		}
-		if (res != expected) {
-			if ((errno != EAGAIN) && (errno != EINTR)) {
-				if (res < 0) 
-					ast_log(LOG_WARNING, "Write returned error (%s)\n", strerror(errno));
-	/*
-	 * Card is in non-blocking mode now and it works well now, but there are
-	 * lot of messages like this. So, this message is temporarily disabled.
-	 */
-#if 0
-				else
-					ast_log(LOG_WARNING, "Only wrote %d of %d bytes\n", res, frame->datalen);
-#endif
-				return -1;
-			} else /* Pretend it worked */
-				res = expected;
-		}
-		sofar += res;
-		pos += res;
-	}
-	return 0;
+	ast_debug(1, "TAPI: phone_write()\n");
+	return -1;
 }
 
 static int
 tapi_dev_event_on_hook(int c)
 {
-        ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
+	ast_log(LOG_ERROR, "TAPI: ONHOOK\n");
 
 	if (ast_mutex_lock(&iflock)) {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
+		return -1;
+	}
 
 	ast_mutex_unlock(&iflock);
 
-        return 0;
+	return 0;
+}
+
+static struct ast_channel *tapi_new(int state, int port_id, char *ext, char *ctx) {
+	ast_debug(1, "tapi_new()\n");
+
+	struct ast_channel *chan = NULL;
+
+	struct tapi_pvt *pvt = &iflist[port_id];
+
+	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, port_id, "TAPI/%s", "1");
+
+	chan->tech = &tapi_tech;
+	chan->nativeformats = AST_FORMAT_ULAW;
+	chan->readformat  = AST_FORMAT_ULAW;
+	chan->writeformat = AST_FORMAT_ULAW;
+	chan->tech_pvt = pvt;
+	pvt->owner = chan;
+
+	return chan;
+}
+
+static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause) {
+	char buf[256];
+	
+	struct ast_channel *chan = NULL;
+	int port_id = -1;
+
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+
+	/* check for correct data argument */
+	if (ast_strlen_zero(data)) {
+		ast_log(LOG_ERROR, "Unable to create channel with empty destination.\n");
+		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
+		return NULL;
+	}
+
+	/* get our port number */
+	port_id = atoi((char*) data);
+	if (port_id < 1 || port_id > dev_ctx.channels) {
+		ast_log(LOG_ERROR, "Unknown channel ID: \"%s\"\n", (char*) data);
+		*cause = AST_CAUSE_CHANNEL_UNACCEPTABLE;
+		return NULL;
+	}
+
+	chan = tapi_new(AST_STATE_DOWN, port_id-1, NULL, NULL);
+
+	return chan;
 }
 
 static int
 tapi_dev_event_off_hook(int c)
 {
-        ast_log(LOG_ERROR, "TAPI: OFFHOOK\n");
+	ast_log(LOG_ERROR, "TAPI: OFFHOOK\n");
 
 	if (ast_mutex_lock(&iflock)) {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
+		return -1;
+	}
 
-        if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-                return -1;
-        }
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
+		return -1;
+	}
 
 	ast_mutex_unlock(&iflock);
 
-        return 0;
+	return 0;
 }
 
 static void
-tapi_dev_event_handler()
+tapi_dev_event_handler(void)
 {
-        IFX_TAPI_EVENT_t event;
-        unsigned int i;
+	IFX_TAPI_EVENT_t event;
+	unsigned int i;
 
-        for (i = 0; i < dev_ctx.channels ; i++) {
+	for (i = 0; i < dev_ctx.channels ; i++) {
 		if (ast_mutex_lock(&iflock)) {
 			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 			break;
 		}
 
-                memset (&event, 0, sizeof(event));
-                event.ch = i;
-                if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
+		memset (&event, 0, sizeof(event));
+		event.ch = i;
+		if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
 			continue;
 		if (event.id == IFX_TAPI_EVENT_NONE)
 			continue;
@@ -1038,23 +556,23 @@ tapi_dev_event_handler()
 				ast_log(LOG_ERROR, "Unable TAPI event %08X\n", event.id);
 				break;
 		}
-        }
+	}
 }
 
 static void *
 tapi_events_monitor(void *data)
 {
-        ast_verbose("TAPI thread started\n");
+	ast_verbose("TAPI thread started\n");
 
-        struct pollfd fds[3];
+	struct pollfd fds[3];
 
-        fds[0].fd = dev_ctx.dev_fd;
-        fds[0].events = POLLIN;
+	fds[0].fd = dev_ctx.dev_fd;
+	fds[0].events = POLLIN;
 #ifdef SKIP_DATA_HANDLER
-        fds[1].fd = dev_ctx.ch_fd[0];
-        fds[1].events = POLLIN;
-        fds[2].fd = dev_ctx.ch_fd[1];
-        fds[2].events = POLLIN;
+	fds[1].fd = dev_ctx.ch_fd[0];
+	fds[1].events = POLLIN;
+	fds[2].fd = dev_ctx.ch_fd[1];
+	fds[2].events = POLLIN;
 #endif
 
 	while (monitor) {
@@ -1063,7 +581,7 @@ tapi_events_monitor(void *data)
 			break;
 		}
 
-                if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
+		if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
 			continue;
 
 		if (fds[0].revents == POLLIN) {
@@ -1073,21 +591,22 @@ tapi_events_monitor(void *data)
 		ast_mutex_unlock(&monlock);
 
 #ifdef SKIP_DATA_HANDLER
-                if (fds[1].revents == POLLIN) {
-                        if (tapi_dev_data_handler(&streams[0])) {
+		if (fds[1].revents == POLLIN) {
+			if (tapi_dev_data_handler(&streams[0])) {
 				ast_verbose("TAPI: data handler failed\n");
-                                break;
-                        }
-                }
+				break;
+			}
+		}
 
-                if (fds[2].revents == POLLIN) {
-                        if (tapi_dev_data_handler(&streams[1])) {
+		if (fds[2].revents == POLLIN) {
+			if (tapi_dev_data_handler(&streams[1])) {
 				ast_verbose("TAPI: data handler failed\n");
-                                break;
-                        }
-                }
+				break;
+			}
+		}
 #endif
-        }
+	}
+
 	return NULL;
 }
 
@@ -1170,9 +689,41 @@ static int unload_module(void)
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
-		
+
 	return 0;
 }
+
+static struct tapi_pvt *tapi_allocate_pvt(void) {
+	struct tapi_pvt *tmp;
+
+	tmp = ast_calloc(1, sizeof(*tmp));
+	if (tmp) {
+		tmp->owner = NULL;
+		tmp->next = NULL;
+	}
+
+	return tmp;
+}
+
+static void tapi_create_pvts(struct tapi_pvt *p) {
+	int i;
+	struct tapi_pvt *tmp = p;
+	struct tapi_pvt *tmp_next;
+
+	for (i=0 ; i<dev_ctx.channels ; i++) {
+		tmp_next = tapi_allocate_pvt();
+		if (tmp != NULL) {
+			tmp->next = tmp_next;
+			tmp_next->next = NULL;
+			tmp->port_id = i;
+		} else {
+			iflist = tmp_next;
+			tmp    = tmp_next;
+			tmp->next = NULL;
+		}
+	}
+}
+
 
 static int load_module(void)
 {
@@ -1358,6 +909,8 @@ static int load_module(void)
 		}
 	}
 
+	tapi_create_pvts(iflist);
+
 	ast_mutex_unlock(&iflock);
 
 	if (ast_channel_register(&tapi_tech)) {
@@ -1368,58 +921,57 @@ static int load_module(void)
 	}
 	ast_config_destroy(cfg);
 	
-        /* tapi */
-        IFX_TAPI_TONE_t tone;
-        IFX_TAPI_DEV_START_CFG_t dev_start;
-        IFX_TAPI_MAP_DATA_t map_data;
-        IFX_TAPI_ENC_CFG_t enc_cfg;
-        IFX_TAPI_LINE_VOLUME_t line_vol;
-        IFX_TAPI_WLEC_CFG_t wlec_cfg;
-        IFX_TAPI_JB_CFG_t jb_cfg;
-        IFX_TAPI_CID_CFG_t cid_cfg;
-        int32_t status;
-        uint8_t c;
+	/* tapi */
+	IFX_TAPI_TONE_t tone;
+	IFX_TAPI_DEV_START_CFG_t dev_start;
+	IFX_TAPI_MAP_DATA_t map_data;
+	IFX_TAPI_ENC_CFG_t enc_cfg;
+	IFX_TAPI_LINE_VOLUME_t line_vol;
+	IFX_TAPI_WLEC_CFG_t wlec_cfg;
+	IFX_TAPI_JB_CFG_t jb_cfg;
+	IFX_TAPI_CID_CFG_t cid_cfg;
+	int32_t status;
+	uint8_t c;
 
-        /* open device */
-        dev_ctx.dev_fd = tapi_dev_open(base_path, 0);
+	/* open device */
+	dev_ctx.dev_fd = tapi_dev_open(base_path, 0);
 
-        if (dev_ctx.dev_fd < 0) {
-                ast_log(LOG_ERROR, "tapi device open function failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (dev_ctx.dev_fd < 0) {
+		ast_log(LOG_ERROR, "tapi device open function failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        for (c = 0; c < dev_ctx.channels ; c++) {
-                dev_ctx.ch_fd[c] = tapi_dev_open(base_path, c + 1);
+	for (c = 0; c < dev_ctx.channels ; c++) {
+		dev_ctx.ch_fd[c] = tapi_dev_open(base_path, c + 1);
 
-                if (dev_ctx.ch_fd[c] < 0) {
-                        ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
-        }
+		if (dev_ctx.ch_fd[c] < 0) {
+			ast_log(LOG_ERROR, "tapi channel %d open function failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+	}
 
-        if (tapi_dev_firmware_download(dev_ctx.dev_fd, firmware_filename)) {
-                ast_log(LOG_ERROR, "voice firmware download failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (tapi_dev_firmware_download(dev_ctx.dev_fd, firmware_filename)) {
+		ast_log(LOG_ERROR, "voice firmware download failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_STOP ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        memset(&dev_start, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
-        dev_start.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
+	memset(&dev_start, 0x0, sizeof(IFX_TAPI_DEV_START_CFG_t));
+	dev_start.nMode = IFX_TAPI_INIT_MODE_VOICE_CODER;
 
-        /* Start TAPI */
-        if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &dev_start)) {
-                ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed\n");
-                return AST_MODULE_LOAD_FAILURE;
-        }
+	/* Start TAPI */
+	if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_START, &dev_start)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEV_START ioctl failed\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
-        /* tones */
-        memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
-
-        for (c = 0; c < dev_ctx.channels ; c++) {
+	/* tones */
+	memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+	for (c = 0; c < dev_ctx.channels ; c++) {
 #ifdef TODO
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
@@ -1427,32 +979,57 @@ static int load_module(void)
 		}
 #endif
 
-                /* perform mapping */
-#ifdef DONT_KNOW_IF_NEEDED
-                memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-                map_data.nDstCh = c;
-                map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+		/* ringing type */
+		IFX_TAPI_RING_CFG_t ringingType;
+		memset(&ringingType, 0, sizeof(IFX_TAPI_RING_CFG_t));
+		ringingType.nMode = IFX_TAPI_RING_CFG_MODE_INTERNAL_BALANCED;
+		ringingType.nSubmode = IFX_TAPI_RING_CFG_SUBMODE_DC_RNG_TRIP_FAST;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_CFG_SET, (IFX_int32_t) &ringingType)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_CFG_SET failed\n");
+			return AST_MODULE_LOAD_FAILURE;
+		}
 
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_REMOVE, &map_data)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_REMOVE %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
+		/* ring cadence */
+		IFX_char_t data[15] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+								0x00, 0x00, 0x00, 0x00, 0x00,     
+								0x00, 0x00, 0x00, 0x00, 0x00 };
+
+		IFX_TAPI_RING_CADENCE_t ringCadence;
+		memset(&ringCadence, 0, sizeof(IFX_TAPI_RING_CADENCE_t));
+		memcpy(&ringCadence.data, data, sizeof(data));
+		ringCadence.nr = sizeof(data) * 8;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_CADENCE_HR_SET, &ringCadence)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_RING_CADENCE_HR_SET failed\n");
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* perform mapping */
+#ifdef DONT_KNOW_IF_NEEDED
+		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
+		map_data.nDstCh = c;
+		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_REMOVE, &map_data)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_REMOVE %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 #endif
 
-                memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-                map_data.nDstCh = c;
-                map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
+		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
+		map_data.nDstCh = c;
+		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
 
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &map_data)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_ADD %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_ADD, &map_data)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_ADD %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 
-                /* set line feed */
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
-                }
+		/* set line feed */
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
 
 		/* Configure encoder for linear stream */
 		memset(&enc_cfg, 0x0, sizeof(IFX_TAPI_ENC_CFG_t));
@@ -1476,10 +1053,10 @@ static int load_module(void)
 
 		/* Configure line echo canceller */
 		memset(&wlec_cfg, 0, sizeof(wlec_cfg));
-	        wlec_cfg.nType = wlec_type;
-	        wlec_cfg.bNlp = wlec_nlp;
+		wlec_cfg.nType = wlec_type;
+		wlec_cfg.bNlp = wlec_nlp;
 		wlec_cfg.nNBFEwindow = wlec_nbfe;
-	        wlec_cfg.nNBNEwindow = wlec_nbne;
+		wlec_cfg.nNBNEwindow = wlec_nbne;
 		wlec_cfg.nWBNEwindow = wlec_wbne;
 
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_WLEC_PHONE_CFG_SET, &wlec_cfg)) {
@@ -1512,11 +1089,11 @@ static int load_module(void)
 		}
 
 		/* Configure voice activity detection */
-                if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_VAD_CFG_SET, vad_type)) {
-                        ast_log(LOG_ERROR, "IFX_TAPI_ENC_VAD_CFG_SET %d failed\n", c);
-                        return AST_MODULE_LOAD_FAILURE;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_VAD_CFG_SET, vad_type)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_ENC_VAD_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
 		}
-        }
+	}
 
 	restart_monitor();
 	return AST_MODULE_LOAD_SUCCESS;
