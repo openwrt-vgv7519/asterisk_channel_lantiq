@@ -60,10 +60,10 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 #define TAPI_LL_DEV_SELECT_TIMEOUT_MS	2000
 
-#define TAPI_TONE_LOCALE_NONE                   32
-#define TAPI_TONE_LOCALE_BUSY_CODE              33
-#define TAPI_TONE_LOCALE_CONGESTION_CODE        34
-#define TAPI_TONE_LOCALE_DIAL_CODE              35
+#define TAPI_TONE_LOCALE_NONE                   0//32
+#define TAPI_TONE_LOCALE_BUSY_CODE              27//33
+#define TAPI_TONE_LOCALE_CONGESTION_CODE        27//34
+#define TAPI_TONE_LOCALE_DIAL_CODE              25//35
 #define TAPI_TONE_LOCALE_RING_CODE              36
 #define TAPI_TONE_LOCALE_WAITING_CODE           37
 
@@ -77,6 +77,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include "asterisk/causes.h"
 #include "asterisk/stringfields.h"
 #include "asterisk/musiconhold.h"
+#include "asterisk/sched.h"
 
 #include "chan_phone.h"
 
@@ -113,6 +114,9 @@ AST_MUTEX_DEFINE_STATIC(monlock);
 
 /* Boolean value whether the monitoring thread shall continue. */
 static unsigned int monitor;
+
+/* The scheduling thread */
+struct ast_sched_thread *sched_thread;
    
 /* This is the thread for the monitor which checks for input on the channels
    which are not currently in use.  */
@@ -122,12 +126,6 @@ static int restart_monitor(void);
 
 /* The private structures of the Phone Jack channels are linked for
    selecting outgoing channels */
-   
-#define MODE_DIALTONE 	1
-#define MODE_IMMEDIATE	2
-#define MODE_FXO	3
-#define MODE_FXS        4
-#define MODE_SIGMA      5
 
 enum channel_state {
 	ONHOOK,
@@ -139,11 +137,28 @@ enum channel_state {
 	UNKNOWN
 };
 
+static const char * tapi_channel_state_string(enum channel_state state) {
+	switch (state) {
+		case ONHOOK: return "ONHOOK";
+		case OFFHOOK: return "OFFHOOK";
+		case DIALING: return "DIALING";
+		case INCALL: return "INCALL";
+		case CALL_ENDED: return "CALL_ENDED";
+		case RINGING: return "RINGING";
+		default: return "UNKNOWN";
+	}
+}
+
 static struct tapi_pvt {
-	struct ast_channel *owner;		/* Channel we belong to, possibly NULL 	*/
-	struct tapi_pvt *next;			/* Next channel in list 				*/
-	int port_id;					/* Physical port number of this object 	*/
+	struct ast_channel *owner;			/* Channel we belong to, possibly NULL 	*/
+	struct tapi_pvt *next;				/* Next channel in list 				*/
+	int port_id;						/* Physical port number of this object 	*/
 	int channel_state;
+	char *context;						/* this port's dialplan context			*/
+	char ext[AST_MAX_EXTENSION+1];		/* the extension this port is connecting*/
+	int dial_timer;						/* timer handle for autodial timeout	*/
+	char dtmfbuf[AST_MAX_EXTENSION+1];	/* buffer holding dialed digits			*/
+	int dtmfbuf_len;					/* lenght of dtmfbuf					*/
 } *iflist = NULL;
 
 typedef struct
@@ -226,6 +241,16 @@ tapi_stop_ringing(int port) {
 	ioctl(dev_ctx.ch_fd[port], IFX_TAPI_RING_STOP, 0);
 }
 
+static int
+tapi_play_tone(int port, int tone) {
+	if (ioctl(dev_ctx.ch_fd[port], IFX_TAPI_TONE_LOCAL_PLAY, tone)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 static enum channel_state tapi_get_hookstatus(int port) {
 	IFX_TAPI_LINE_HOOK_STATUS_GET_t status = 0;
 
@@ -235,9 +260,9 @@ static enum channel_state tapi_get_hookstatus(int port) {
 	}
 
 	if (status) {
-		return ONHOOK;
-	} else {
 		return OFFHOOK;
+	} else {
+		return ONHOOK;
 	}
 }
 
@@ -348,9 +373,9 @@ static int phone_call(struct ast_channel *ast, char *dest, int timeout)
 
 	ast_mutex_lock(&iflock);
 	
-	ast_debug(1, "TAPI: phone_call() after lock\n");
-
 	struct tapi_pvt *pvt = ast->tech_pvt;
+	
+	ast_debug(1, "TAPI: phone_call() state: %s\n", tapi_channel_state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
 		ast_debug(1, "TAPI: phone_call(): port %i ringing.\n", pvt->port_id);
@@ -379,16 +404,32 @@ static int phone_hangup(struct ast_channel *ast)
 
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
-
+	
 	if (ast->_state == AST_STATE_RINGING) {
 		ast_debug(1, "TAPI: phone_hangup(): ast->_state == AST_STATE_RINGING\n");
 	}
 
-	tapi_stop_ringing(pvt->port_id);
+	switch (pvt->channel_state) {
+		case RINGING:
+		case ONHOOK: 
+			{
+				tapi_stop_ringing(pvt->port_id);
+				pvt->channel_state = ONHOOK;
+				break;
+			}
+		default:
+			{
+				ast_debug(1, "TAPI: phone_hangup(): we were hung up, play busy tone.\n");
+				pvt->channel_state = CALL_ENDED;
+				tapi_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+			}
+	}
 
 	ast_setstate(ast, AST_STATE_DOWN);
 	ast_module_unref(ast_module_info->self);
 	ast->tech_pvt = NULL;
+	pvt->owner = NULL;
+
 	ast_mutex_unlock(&iflock);
 
 	return 0;
@@ -451,36 +492,53 @@ static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 }
 
 static int go_onhook(int c) {
+	int ret = -1;
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
-	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 0)) {
-		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-		return -1;
-	}
+	ret = tapi_play_tone(c, TAPI_TONE_LOCALE_NONE);
 
-	return 0;
+out:
+	return ret;
 }
 
 static int end_dialing(int c) {
-	ast_debug(1, "%s", __FUNCTION__);
+	ast_debug(1, "%s\n", __FUNCTION__);
+	struct tapi_pvt *pvt = &iflist[c-1];
+
+	if (pvt->dial_timer) {
+		ast_sched_thread_del(sched_thread, pvt->dial_timer);
+		pvt->dial_timer = 0;
+	}
+
+	if(pvt->owner) {
+		ast_hangup(pvt->owner);
+	}
+
 	return 0;
 }
 
 static int end_call(int c) {
-	ast_debug(1, "%s", __FUNCTION__);
+	ast_debug(1, "%s\n", __FUNCTION__);
+
+	struct tapi_pvt *pvt = &iflist[c-1];
+	
+	if(pvt->owner) {
+		ast_queue_hangup(pvt->owner);
+	}
+
 	return 0;
 }
 
@@ -493,9 +551,9 @@ tapi_dev_event_on_hook(int c)
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
-
+	
 	int ret = 0;
-	switch (iflist[c].channel_state) {
+	switch (iflist[c-1].channel_state) {
 		case OFFHOOK: 
 			{
 				ret = go_onhook(c);
@@ -518,13 +576,12 @@ tapi_dev_event_on_hook(int c)
 			}
 		default:
 			{
-				ast_debug(1, "TAPI: tapi_dev_event_on_hook(): invalid state change.\n");
 				ret = -1;
 				break;
 			}
 	}
 
-	iflist[c].channel_state = ONHOOK;
+	iflist[c-1].channel_state = ONHOOK;
 
 	ast_mutex_unlock(&iflock);
 
@@ -536,7 +593,7 @@ static struct ast_channel *tapi_new(int state, int port_id, char *ext, char *ctx
 
 	struct ast_channel *chan = NULL;
 
-	struct tapi_pvt *pvt = &iflist[port_id];
+	struct tapi_pvt *pvt = &iflist[port_id-1];
 
 	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, port_id, "TAPI/%s", "1");
 
@@ -545,6 +602,7 @@ static struct ast_channel *tapi_new(int state, int port_id, char *ext, char *ctx
 	chan->readformat  = AST_FORMAT_ULAW;
 	chan->writeformat = AST_FORMAT_ULAW;
 	chan->tech_pvt = pvt;
+
 	pvt->owner = chan;
 
 	return chan;
@@ -578,7 +636,7 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 		return NULL;
 	}
 
-	chan = tapi_new(AST_STATE_DOWN, port_id-1, NULL, NULL);
+	chan = tapi_new(AST_STATE_DOWN, port_id, NULL, NULL);
 
 	ast_mutex_unlock(&iflock);
 	return chan;
@@ -594,7 +652,7 @@ tapi_dev_event_off_hook(int c)
 		return -1;
 	}
 	
-	iflist[c].channel_state = OFFHOOK;
+	iflist[c-1].channel_state = OFFHOOK;
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
@@ -611,14 +669,122 @@ tapi_dev_event_off_hook(int c)
 		return -1;
 	}
 
-	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, 25)) {
-		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
-		return -1;
-	}
+	tapi_play_tone(c, TAPI_TONE_LOCALE_DIAL_CODE);
 
 	ast_mutex_unlock(&iflock);
 
 	return 0;
+}
+
+static void tapi_reset_dtmfbuf(struct tapi_pvt *pvt) {
+		pvt->dtmfbuf[0] = '\0';
+		pvt->dtmfbuf_len = 0;
+		pvt->ext[0] = '\0';
+}
+
+static void tapi_dial(struct tapi_pvt *pvt) {
+	ast_debug(1, "TAPI: tapi_dial()\n");
+
+	struct ast_channel *chan = NULL;
+
+	ast_debug(1, "TAPI: tapi_dial(): user want's to dial %s.\n", pvt->dtmfbuf);
+
+	if (ast_exists_extension(NULL, pvt->context, pvt->dtmfbuf, 1, NULL)) {
+		ast_debug(1, "TAPI: tapi_dial(): Asterisk knows extension %s, dialing.\n", pvt->dtmfbuf);
+
+		strcpy(pvt->ext, pvt->dtmfbuf);
+
+		ast_verbose( VERBOSE_PREFIX_3 "  extension exists, starting PBX %s\n", pvt->ext);
+
+		chan = tapi_new(1, AST_STATE_UP, pvt->ext, pvt->context);
+		chan->tech_pvt = pvt;
+		pvt->owner = chan;
+
+		strcpy(chan->exten, pvt->ext);
+		ast_setstate(chan, AST_STATE_RING);
+		pvt->channel_state = INCALL;
+
+		if (ast_pbx_start(chan)) {
+			ast_log(LOG_WARNING, "  Unable to start PBX on %s\n", chan->name);
+			ast_hangup(chan);
+		}
+	}
+	else {
+		ast_debug(1, "TAPI: tapi_dial(): no extension found.\n");
+
+		tapi_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+		pvt->channel_state = CALL_ENDED;
+	}
+	
+	tapi_reset_dtmfbuf(pvt);
+}
+
+static int tapi_event_dial_timeout(const void* data) {
+	ast_debug(1, "TAPI: tapi_event_dial_timeout()\n");
+
+	struct tapi_pvt *pvt = (struct tapi_pvt *) data;
+	pvt->dial_timer = 0;
+
+	if (! pvt->channel_state == ONHOOK) {
+		tapi_dial(pvt);
+	} else {
+		ast_debug(1, "TAPI: tapi_event_dial_timeout(): dial timeout in state ONHOOK.\n");
+	}
+
+	return 0;
+}
+
+
+static void tapi_dev_event_digit(int port, char digit) {
+	ast_debug(1, "TAPI: tapi_event_digit() port=%i digit=%c\n", port, digit);
+	if (ast_mutex_lock(&iflock)) {
+		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
+		return;
+	}
+
+	struct tapi_pvt *pvt = &iflist[port-1];
+
+	switch (pvt->channel_state) {
+		case OFFHOOK:  
+			pvt->channel_state = DIALING;
+			
+			tapi_play_tone(port, TAPI_TONE_LOCALE_NONE);
+
+			/* fall through */
+		case DIALING: 
+			{
+				if (digit == '#') {
+					if (pvt->dial_timer) {
+						ast_sched_thread_del(sched_thread, pvt->dial_timer);
+						pvt->dial_timer = 0;
+					}
+
+					tapi_dial(pvt);
+				} else {
+					pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
+					pvt->dtmfbuf_len++;
+					pvt->dtmfbuf[pvt->dtmfbuf_len] = '\0';
+
+					/* setup autodial timer */
+					if (!pvt->dial_timer) {
+						ast_debug(1, "TAPI: tapi_dev_event_digit() setting new timer.\n");
+						pvt->dial_timer = ast_sched_thread_add(sched_thread, 2000, tapi_event_dial_timeout, (const void*) pvt);
+					} else {
+						ast_debug(1, "TAPI: tapi_dev_event_digit() replacing timer.\n");
+						struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
+						AST_SCHED_REPLACE(pvt->dial_timer, sched, 2000, tapi_event_dial_timeout, (const void*) pvt);
+					}
+				}
+				break;
+			}
+		default: {
+					 ast_debug(1, "TAPI: tapi_dev_event_digit() unhandled state.\n");
+					 break;
+				 }
+	}
+
+	ast_mutex_unlock(&iflock);
+	return;
 }
 
 static void
@@ -651,12 +817,15 @@ tapi_dev_event_handler(void)
 				break;
 			case IFX_TAPI_EVENT_DTMF_DIGIT:
 				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DTMF DIGIT: %c\n", i, (char)event.data.dtmf.ascii);
+				tapi_dev_event_digit(i, (char)event.data.dtmf.ascii);
 				break;
 			case IFX_TAPI_EVENT_PULSE_DIGIT:
 				if (event.data.pulse.digit == 0xB) {
 					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0');
+					tapi_dev_event_digit(i, '0');
 				} else {
 					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0' + (char)event.data.pulse.digit);
+					tapi_dev_event_digit(i, '0' + (char)event.data.pulse.digit);
 				}
 				break;
 			case IFX_TAPI_EVENT_COD_DEC_CHG:
@@ -692,8 +861,10 @@ tapi_events_monitor(void *data)
 			break;
 		}
 
-		if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0)
+		if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0) {
+			ast_mutex_unlock(&monlock);
 			continue;
+		}
 
 		if (fds[0].revents == POLLIN) {
 			tapi_dev_event_handler();
@@ -811,7 +982,13 @@ static struct tapi_pvt *tapi_allocate_pvt(void) {
 	if (tmp) {
 		tmp->owner = NULL;
 		tmp->next = NULL;
-		tmp->channel_state = ONHOOK;
+		tmp->port_id       	= -1;
+		tmp->channel_state 	= UNKNOWN;
+		tmp->context		= strdup("default");;
+		tmp->ext[0]			= '\0';
+		tmp->dial_timer    	= 0;
+		tmp->dtmfbuf[0]    	= '\0';
+		tmp->dtmfbuf_len   	= 0;
 	}
 
 	return tmp;
@@ -825,9 +1002,9 @@ static void tapi_create_pvts(struct tapi_pvt *p) {
 	for (i=0 ; i<dev_ctx.channels ; i++) {
 		tmp_next = tapi_allocate_pvt();
 		if (tmp != NULL) {
-			tmp->next = tmp_next;
-			tmp_next->next = NULL;
-			tmp->port_id = i;
+			tmp->next          = tmp_next;
+			tmp_next->next     = NULL;
+			tmp->port_id       = i;
 		} else {
 			iflist = tmp_next;
 			tmp    = tmp_next;
@@ -860,6 +1037,11 @@ static int load_module(void)
 	int vad_type = IFX_TAPI_ENC_VAD_NOVAD;
 	dev_ctx.channels = TAPI_AUDIO_PORT_NUM_MAX;
 	struct ast_flags config_flags = { 0 };
+	
+	if (!(sched_thread = ast_sched_thread_create())) {
+		ast_log(LOG_ERROR, "Unable to create scheduler thread\n");
+		return AST_MODULE_LOAD_FAILURE;
+	}
 
 	if ((cfg = ast_config_load(config, config_flags)) == CONFIG_STATUS_FILEINVALID) {
 		ast_log(LOG_ERROR, "Config file %s is in an invalid format.  Aborting.\n", config);
@@ -1207,9 +1389,9 @@ static int load_module(void)
 		}
 
 		/* Set initial hook status */
-		iflist[c].channel_state = tapi_get_hookstatus(c);
+		iflist[c-1].channel_state = tapi_get_hookstatus(c);
 		
-		if (iflist[c].channel_state == UNKNOWN) {
+		if (iflist[c-1].channel_state == UNKNOWN) {
 			return AST_MODULE_LOAD_FAILURE;
 		}
 	}
