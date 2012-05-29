@@ -56,6 +56,8 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <drv_tapi/drv_tapi_io.h>
 #include <drv_vmmc/vmmc_io.h>
 
+#define RTP_HEADER_LEN 12
+
 #define TAPI_AUDIO_PORT_NUM_MAX		2
 
 #define TAPI_LL_DEV_SELECT_TIMEOUT_MS	2000
@@ -159,13 +161,15 @@ static struct tapi_pvt {
 	int dial_timer;						/* timer handle for autodial timeout	*/
 	char dtmfbuf[AST_MAX_EXTENSION+1];	/* buffer holding dialed digits			*/
 	int dtmfbuf_len;					/* lenght of dtmfbuf					*/
+	int rtp_timestamp;					/* timestamp for RTP packets			*/
+	uint16_t rtp_seqno;					/* Sequence nr for RTP packets			*/
 } *iflist = NULL;
 
 typedef struct
 {
-        int dev_fd;
-        int channels;
-        int ch_fd[TAPI_AUDIO_PORT_NUM_MAX];
+		int dev_fd;
+		int channels;
+		int ch_fd[TAPI_AUDIO_PORT_NUM_MAX];
 } tapi_ctx;
 
 tapi_ctx dev_ctx;
@@ -204,6 +208,25 @@ static const struct ast_channel_tech tapi_tech = {
 	.fixup = phone_fixup,
 	.requester = phone_requester
 };
+
+#define WORDS_BIGENDIAN
+/* struct taken from some GPLed code by  Mike Borella */
+typedef struct rtp_header
+{
+#if defined(WORDS_BIGENDIAN)
+  uint8_t version:2, padding:1, extension:1, csrc_count:4;
+#else
+  uint8_t csrc_count:4, extension:1, padding:1, version:2;
+#endif
+#if defined(WORDS_BIGENDIAN)
+  uint8_t marker:1, payload_type:7;
+#else
+  uint8_t payload_type:7, marker:1;
+#endif
+  uint16_t seqno;
+  uint32_t timestamp;
+  uint32_t ssrc;
+} rtp_header_t;
 
 static int
 tapi_dev_open(const char *dev_path, const int32_t ch_num)
@@ -256,7 +279,7 @@ static enum channel_state tapi_get_hookstatus(int port) {
 
 	if (ioctl(dev_ctx.ch_fd[port], IFX_TAPI_LINE_HOOK_STATUS_GET, &status)) {
 		ast_log(LOG_ERROR, "cannot get hookstate!\n");
-        return UNKNOWN;
+		return UNKNOWN;
 	}
 
 	if (status) {
@@ -540,8 +563,54 @@ static int phone_send_text(struct ast_channel *ast, const char *text)
 
 static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 {
-	ast_debug(1, "TAPI: phone_write()\n");
-	return -1;
+//	ast_debug(1, "TAPI: phone_write()\n");
+
+	char buf[2048];
+	struct tapi_pvt *pvt = ast->tech_pvt;
+	int ret = -1;
+	int c = pvt->port_id;
+	rtp_header_t *rtp_header = (rtp_header_t *) buf;
+
+	if(frame->frametype != AST_FRAME_VOICE) {
+		ast_debug(1, "TAPI: phone_write(): unhandled frame type.\n");
+		return 0;
+	}
+
+	memset(buf, '\0', sizeof(rtp_header_t));
+	rtp_header->version      = 2;
+	rtp_header->padding      = 0;
+	rtp_header->extension    = 0;
+	rtp_header->csrc_count   = 0;
+	rtp_header->marker       = 0;
+	rtp_header->timestamp    = pvt->rtp_timestamp;
+	rtp_header->seqno        = pvt->rtp_seqno++;
+	rtp_header->ssrc         = 0;
+	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
+
+	pvt->rtp_timestamp += 160;
+
+	memcpy(buf+RTP_HEADER_LEN, frame->data.ptr, frame->datalen);
+
+	ret = write(dev_ctx.ch_fd[c], buf, frame->datalen+RTP_HEADER_LEN);
+	if (ret <= 0) {
+		ast_debug(1, "TAPI: phone_write(): error writing.\n");
+		return -1;
+	}
+/*
+	ast_debug(1, "phone_write(): size: %i version: %i padding: %i extension: %i csrc_count: %i \n"
+				 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
+				 (int)ret,
+				 (int)rtp_header->version,
+				 (int)rtp_header->padding,
+				 (int)rtp_header->extension,
+				 (int)rtp_header->csrc_count,
+				 (int)rtp_header->marker,
+				 ast_codec2str(rtp_header->payload_type),
+				 (int)rtp_header->seqno,
+				 (int)rtp_header->timestamp,
+				 (int)rtp_header->ssrc);
+*/
+	return 0;
 }
 
 static int go_onhook(int c) {
@@ -695,6 +764,52 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 	return chan;
 }
 
+static int
+tapi_dev_data_handler(int c) {
+//	ast_debug(1, "%s line=%i\n", __FUNCTION__, __LINE__);
+
+	char buf[2048];
+	struct ast_frame frame = {0};
+
+	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
+	if (res <= 0) ast_debug(1, "%s: Read error: %i.\n", __FUNCTION__, res);
+	
+	rtp_header_t *rtp = (rtp_header_t*) buf;
+
+	frame.src = "TAPI";
+	frame.frametype = AST_FRAME_VOICE;
+	frame.subclass.codec = rtp->payload_type;
+	frame.samples = res - RTP_HEADER_LEN;
+    frame.datalen = res - RTP_HEADER_LEN;
+	frame.data.ptr = buf + RTP_HEADER_LEN;
+	
+	ast_mutex_lock(&iflock);
+	struct tapi_pvt *pvt = (struct tapi_pvt *) &iflist[c-1];
+	if (pvt->owner && (pvt->owner->_state == AST_STATE_UP)) {
+		if(!ast_channel_trylock(pvt->owner)) {
+			ast_queue_frame(pvt->owner, &frame);
+			ast_channel_unlock(pvt->owner);
+		}
+	}
+
+	ast_mutex_unlock(&iflock);
+
+/*	ast_debug(1, "tapi_dev_data_handler(): size: %i version: %i padding: %i extension: %i csrc_count: %i \n"
+				 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
+				 (int)res,
+				 (int)rtp->version,
+				 (int)rtp->padding,
+				 (int)rtp->extension,
+				 (int)rtp->csrc_count,
+				 (int)rtp->marker,
+				 ast_codec2str(rtp->payload_type),
+				 (int)rtp->seqno,
+				 (int)rtp->timestamp,
+				 (int)rtp->ssrc);
+*/
+	return 0;
+}
+
 static int accept_call(int c) {
 	ast_debug(1, "%s: line %i\n", __FUNCTION__, __LINE__);
 
@@ -746,7 +861,7 @@ tapi_dev_event_off_hook(int c)
 		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
 		goto out;
 	}
-
+	
 	switch (iflist[c-1].channel_state) {
 		case RINGING: 
 			{
@@ -940,12 +1055,10 @@ tapi_events_monitor(void *data)
 
 	fds[0].fd = dev_ctx.dev_fd;
 	fds[0].events = POLLIN;
-#ifdef SKIP_DATA_HANDLER
 	fds[1].fd = dev_ctx.ch_fd[0];
 	fds[1].events = POLLIN;
 	fds[2].fd = dev_ctx.ch_fd[1];
 	fds[2].events = POLLIN;
-#endif
 
 	while (monitor) {
 		if (ast_mutex_lock(&monlock)) {
@@ -958,27 +1071,25 @@ tapi_events_monitor(void *data)
 			continue;
 		}
 
-		if (fds[0].revents == POLLIN) {
+		if (fds[0].revents & POLLIN) {
 			tapi_dev_event_handler();
 		}
 
 		ast_mutex_unlock(&monlock);
 
-#ifdef SKIP_DATA_HANDLER
-		if (fds[1].revents == POLLIN) {
-			if (tapi_dev_data_handler(&streams[0])) {
+		if (fds[1].revents & POLLIN) {
+			if (tapi_dev_data_handler(0)) {
 				ast_verbose("TAPI: data handler failed\n");
 				break;
 			}
 		}
 
-		if (fds[2].revents == POLLIN) {
-			if (tapi_dev_data_handler(&streams[1])) {
+		if (fds[2].revents & POLLIN) {
+			if (tapi_dev_data_handler(1)) {
 				ast_verbose("TAPI: data handler failed\n");
 				break;
 			}
 		}
-#endif
 	}
 
 	return NULL;
@@ -1105,6 +1216,35 @@ static void tapi_create_pvts(struct tapi_pvt *p) {
 	}
 }
 
+
+static int tapi_setup_rtp(int c) {
+	/* Configure RTP payload type tables */
+	IFX_TAPI_PKT_RTP_PT_CFG_t rtpPTConf;
+
+	memset((char*)&rtpPTConf, '\0', sizeof(rtpPTConf));
+
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
+//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
+//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_53] = 4;
+//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
+//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_53] = AST_FORMAT_G723_1;
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+
+	int ret;
+	if ((ret = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_PKT_RTP_PT_CFG_SET, (IFX_int32_t) &rtpPTConf))) {
+		ast_log(LOG_ERROR, "IFX_TAPI_PKT_RTP_PT_CFG_SET failed: ret=%i\n", ret);
+		return -1;
+	}
+
+	return 0;
+}
 
 static int load_module(void)
 {
@@ -1355,10 +1495,10 @@ static int load_module(void)
 		return AST_MODULE_LOAD_FAILURE;
 	}
 
-	/* tones */
-	memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 	for (c = 0; c < dev_ctx.channels ; c++) {
+		/* tones */
 #ifdef TODO
+		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			return AST_MODULE_LOAD_FAILURE;
@@ -1391,17 +1531,6 @@ static int load_module(void)
 		}
 
 		/* perform mapping */
-#ifdef DONT_KNOW_IF_NEEDED
-		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
-		map_data.nDstCh = c;
-		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
-
-		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_MAP_DATA_REMOVE, &map_data)) {
-			ast_log(LOG_ERROR, "IFX_TAPI_MAP_DATA_REMOVE %d failed\n", c);
-			return AST_MODULE_LOAD_FAILURE;
-		}
-#endif
-
 		memset(&map_data, 0x0, sizeof(IFX_TAPI_MAP_DATA_t));
 		map_data.nDstCh = c;
 		map_data.nChType = IFX_TAPI_MAP_TYPE_PHONE;
@@ -1417,10 +1546,10 @@ static int load_module(void)
 			return AST_MODULE_LOAD_FAILURE;
 		}
 
-		/* Configure encoder for linear stream */
+		/* Configure encoder */
 		memset(&enc_cfg, 0x0, sizeof(IFX_TAPI_ENC_CFG_t));
 		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_LIN16_8;
+		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
 
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
@@ -1477,6 +1606,11 @@ static int load_module(void)
 		/* Configure voice activity detection */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_VAD_CFG_SET, vad_type)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_ENC_VAD_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		/* Setup TAPI <-> Asterisk codec type mapping */
+		if (tapi_setup_rtp(c)) {
 			return AST_MODULE_LOAD_FAILURE;
 		}
 
