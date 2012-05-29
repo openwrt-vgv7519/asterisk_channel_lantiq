@@ -642,6 +642,31 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 	return chan;
 }
 
+static int accept_call(int c) {
+	ast_debug(1, "%s: line %i\n", __FUNCTION__, __LINE__);
+
+	struct tapi_pvt *pvt = &iflist[c-1];
+
+	if (pvt->owner) {
+		struct ast_channel *chan = pvt->owner;
+
+		switch (chan->_state) {
+			case AST_STATE_RINGING:
+				{
+					ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
+					pvt->channel_state = INCALL;
+					break;
+				}
+			default:
+				{
+					ast_debug(1, "%s: line %i: unhandled state %s.\n", __FUNCTION__, __LINE__, ast_state2str(chan->_state));
+				}
+		}
+	}
+
+	return 0;
+}
+
 static int
 tapi_dev_event_off_hook(int c)
 {
@@ -652,28 +677,42 @@ tapi_dev_event_off_hook(int c)
 		return -1;
 	}
 	
-	iflist[c-1].channel_state = OFFHOOK;
+	int ret = -1;
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
-		return -1;
+		goto out;
 	}
 
-	tapi_play_tone(c, TAPI_TONE_LOCALE_DIAL_CODE);
+	switch (iflist[c-1].channel_state) {
+		case RINGING: 
+			{
+				ret = accept_call(c);
+				break;
+			}
+		default:
+			{
+				iflist[c-1].channel_state = OFFHOOK;
+				tapi_play_tone(c, TAPI_TONE_LOCALE_DIAL_CODE);
+				ret = 0;
+				break;
+			}
+	}
 
+out:
 	ast_mutex_unlock(&iflock);
 
-	return 0;
+	return ret;
 }
 
 static void tapi_reset_dtmfbuf(struct tapi_pvt *pvt) {
