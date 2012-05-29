@@ -342,10 +342,63 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
 	return 0;
 }
 
+static char *control2str(int ind) {
+	char *tmp;
+
+	switch (ind) {
+	case AST_CONTROL_HANGUP:
+		return "Other end has hungup";
+	case AST_CONTROL_RING:
+		return "Local ring";
+	case AST_CONTROL_RINGING:
+		return "Remote end is ringing";
+	case AST_CONTROL_ANSWER:
+		return "Remote end has answered";
+	case AST_CONTROL_BUSY:
+		return "Remote end is busy";
+	case AST_CONTROL_TAKEOFFHOOK:
+		return "Make it go off hook";
+	case AST_CONTROL_OFFHOOK:
+		return "Line is off hook";
+	case AST_CONTROL_CONGESTION:
+		return "Congestion (circuits busy)";
+	case AST_CONTROL_FLASH:
+		return "Flash hook";
+	case AST_CONTROL_WINK:
+		return "Wink";
+	case AST_CONTROL_OPTION:
+		return "Set a low-level option";
+	case AST_CONTROL_RADIO_KEY:
+		return "Key Radio";
+	case AST_CONTROL_RADIO_UNKEY:
+		return "Un-Key Radio";
+	case AST_CONTROL_PROGRESS:
+		return "Remote end is making Progress";
+	case AST_CONTROL_PROCEEDING:
+		return "Remote end is proceeding";
+	case AST_CONTROL_HOLD:
+		return "Hold";
+	case AST_CONTROL_UNHOLD:
+		return "Unhold";
+	case AST_CONTROL_SRCUPDATE:
+		return "Media Source Update";
+	case AST_CONTROL_CONNECTED_LINE:
+		return "Connected Line";
+	case AST_CONTROL_REDIRECTING:
+		return "Redirecting";
+	case AST_CONTROL_INCOMPLETE:
+		return "Incomplete";
+	case -1:
+		return "Stop tone";
+	default:
+		return "Unknown";
+	}
+}
+
 static int phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	ast_debug(1, "TAPI: phone_indicate()\n");
-	return -1;
+	ast_verb(3, "TAPI: phone indication \"%s\".\n", control2str(condition));
+	return 0;
 }
 
 static int phone_fixup(struct ast_channel *old, struct ast_channel *new)
