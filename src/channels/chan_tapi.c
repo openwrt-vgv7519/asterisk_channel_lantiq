@@ -1178,44 +1178,39 @@ static int unload_module(void)
 	return 0;
 }
 
-static struct tapi_pvt *tapi_allocate_pvt(void) {
-	struct tapi_pvt *tmp;
-
-	tmp = ast_calloc(1, sizeof(*tmp));
-	if (tmp) {
-		tmp->owner = NULL;
-		tmp->next = NULL;
-		tmp->port_id       	= -1;
-		tmp->channel_state 	= UNKNOWN;
-		tmp->context		= strdup("default");;
-		tmp->ext[0]			= '\0';
-		tmp->dial_timer    	= 0;
-		tmp->dtmfbuf[0]    	= '\0';
-		tmp->dtmfbuf_len   	= 0;
+static struct tapi_pvt *tapi_init_pvt(struct tapi_pvt *pvt) {
+	if (pvt) {
+		pvt->owner         = NULL;
+		pvt->port_id       = -1;
+		pvt->channel_state = UNKNOWN;
+		pvt->context       = strdup("default");
+		pvt->ext[0]        = '\0';
+		pvt->dial_timer    = 0;
+		pvt->dtmfbuf[0]    = '\0';
+		pvt->dtmfbuf_len   = 0;
+	} else {
+		ast_log(LOG_ERROR, "%s line %i: cannot clear structure.\n", __FUNCTION__, __LINE__);
 	}
 
-	return tmp;
+	return pvt;
 }
 
-static void tapi_create_pvts(struct tapi_pvt *p) {
+static int tapi_create_pvts(void) {
 	int i;
-	struct tapi_pvt *tmp = p;
-	struct tapi_pvt *tmp_next;
 
-	for (i=0 ; i<dev_ctx.channels ; i++) {
-		tmp_next = tapi_allocate_pvt();
-		if (tmp != NULL) {
-			tmp->next          = tmp_next;
-			tmp_next->next     = NULL;
-			tmp->port_id       = i;
-		} else {
-			iflist = tmp_next;
-			tmp    = tmp_next;
-			tmp->next = NULL;
+	iflist = ast_calloc(1, sizeof(struct tapi_pvt)*dev_ctx.channels);
+
+	if (iflist) { 
+		for (i=0 ; i<dev_ctx.channels ; i++) {
+			tapi_init_pvt(&iflist[i]);
+			iflist[i].port_id = i;
 		}
+		return 0;
+	} else {
+		ast_log(LOG_ERROR, "%s line %i: cannot allocate memory.\n", __FUNCTION__, __LINE__);
+		return -1;
 	}
 }
-
 
 static int tapi_setup_rtp(int c) {
 	/* Configure RTP payload type tables */
@@ -1435,7 +1430,7 @@ static int load_module(void)
 		}
 	}
 
-	tapi_create_pvts(iflist);
+	tapi_create_pvts();
 
 	ast_mutex_unlock(&iflock);
 
