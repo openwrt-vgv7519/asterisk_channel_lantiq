@@ -5,11 +5,14 @@
  * Copyright (C) 2012, John Crispin
  * Copyright (C) 2012, Kaspar Schleiser for T-Labs
  *                     (Deutsche Telekom Innovation Laboratories)
+ * Copyright (C) 2012, Mirko Vogt for T-Labs
+ *                     (Deutsche Telekom Innovation Laboratories)
  *
  * Luka Perkov <openwrt@lukaperkov.net>
  * John Crispin <blogic@openwrt.org>
  * Andrej Vlašić <andrej.vlasic0@gmail.com>
  * Kaspar Schleiser <kaspar@schleiser.de>
+ * Mirko Vogt <mirko@openwrt.org>
  *
  * See http://www.asterisk.org for more information about
  * the Asterisk project. Please do not directly contact
@@ -30,6 +33,7 @@
  * \author John Crispin <blogic@openwrt.org>
  * \author Andrej Vlašić <andrej.vlasic0@gmail.com>
  * \author Kaspar Schleiser <kaspar@schleiser.de>
+ * \author Mirko Vogt <mirko@openwrt.org>
  * 
  * \ingroup channel_drivers
  */
