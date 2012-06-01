@@ -220,15 +220,15 @@ $(call Package/asterisk18/Default/description)
  This package provides MySQL support to Asterisk.
 endef
 
-define Package/asterisk18-chan-tapi
+define Package/asterisk18-chan-ltqtapi
 $(call Package/asterisk18/Default)
   TITLE:=Lantiq TAPI support
   DEPENDS:= asterisk18 TARGET_lantiq:kmod-ltq-tapi TARGET_lantiq:kmod-ltq-vmmc
 endef
 
-define Package/asterisk18-chan-tapi/description
+define Package/asterisk18-chan-ltqtapi/description
 $(call Package/asterisk18/Default/description)
- This package provides the channel chan_tapi support to Asterisk.
+ This package provides the channel chan_tltqapi support to Asterisk.
 endef
 
 ifneq ($(SDK)$(CONFIG_PACKAGE_asterisk18-app-meetme),)
@@ -574,15 +574,15 @@ define Package/asterisk18-mysql/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/asterisk/modules/res_config_mysql.so $(1)/usr/lib/asterisk/modules/
 endef
 
-define Package/asterisk18-chan-tapi/conffiles
-/etc/asterisk/tapi.conf
+define Package/asterisk18-chan-ltqtapi/conffiles
+/etc/asterisk/ltqtapi.conf
 endef
 
-define Package/asterisk18-chan-tapi/install
+define Package/asterisk18-chan-ltqtapi/install
 	$(INSTALL_DIR) $(1)/usr/lib/asterisk/modules
 	$(INSTALL_DIR) $(1)/etc/asterisk
-	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/etc/asterisk/tapi.conf $(1)/etc/asterisk/
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/asterisk/modules/chan_tapi.so $(1)/usr/lib/asterisk/modules/
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/etc/asterisk/ltqtapi.conf $(1)/etc/asterisk/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/lib/asterisk/modules/chan_ltqtapi.so $(1)/usr/lib/asterisk/modules/
 endef
 
 define Package/asterisk18-res-srtp/install
@@ -628,7 +628,7 @@ $(eval $(call BuildPackage,asterisk18-chan-mgcp))
 $(eval $(call BuildPackage,asterisk18-chan-skinny))
 $(eval $(call BuildPackage,asterisk18-curl))
 $(eval $(call BuildPackage,asterisk18-mysql))
-$(eval $(call BuildPackage,asterisk18-chan-tapi))
+$(eval $(call BuildPackage,asterisk18-chan-ltqtapi))
 $(eval $(call BuildPackage,asterisk18-res-srtp))
 $(eval $(call Buildasterisk18ModuleTemplate,app_authenticate,Authenticate,support for executing arbitrary authenticate commands))
 $(eval $(call Buildasterisk18ModuleTemplate,app_chanisavail,Channel availability check,support for checking if a channel is available))

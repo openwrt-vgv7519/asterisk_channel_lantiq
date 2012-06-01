@@ -28,7 +28,7 @@
 
 /*! \file
  *
- * \brief TAPI Telephony Interface driver
+ * \brief Asterisk channel line driver for Lantiq based TAPI boards
  *
  * \author Luka Perkov <openwrt@lukaperkov.net>
  * \author John Crispin <blogic@openwrt.org>
@@ -94,7 +94,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define PHONE_MAX_BUF 480
 #define DEFAULT_GAIN 0x0
 
-static const char config[] = "tapi.conf";
+static const char config[] = "ltqtapi.conf";
 
 /* Default context for dialtone mode */
 static char context[AST_MAX_EXTENSION] = "default";
