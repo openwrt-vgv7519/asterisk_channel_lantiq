@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2012, Luka Perkov
  * Copyright (C) 2012, John Crispin
+ * Copyright (C) 2012, Andrej Vlašić
  * Copyright (C) 2012, Kaspar Schleiser for T-Labs
  *                     (Deutsche Telekom Innovation Laboratories)
  * Copyright (C) 2012, Mirko Vogt for T-Labs
