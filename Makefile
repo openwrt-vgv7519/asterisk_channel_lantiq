@@ -228,7 +228,7 @@ endef
 
 define Package/asterisk18-chan-ltqtapi/description
 $(call Package/asterisk18/Default/description)
- This package provides the channel chan_tltqapi support to Asterisk.
+ This package provides the channel chan_ltqtapi support to Asterisk.
 endef
 
 ifneq ($(SDK)$(CONFIG_PACKAGE_asterisk18-app-meetme),)
