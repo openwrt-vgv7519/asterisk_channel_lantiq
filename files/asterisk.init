@@ -7,17 +7,6 @@ DEFAULT=$DEST/etc/default/asterisk
 OPTIONS=""
 
 start() {
-	[ ! -c /dev/vmmc10 ] && mknod /dev/vmmc10 c 122 10
-	[ ! -c /dev/vmmc11 ] && mknod /dev/vmmc11 c 122 11
-	[ ! -c /dev/vmmc12 ] && mknod /dev/vmmc12 c 122 12
-	[ ! -c /dev/vmmc13 ] && mknod /dev/vmmc13 c 122 13
-	[ ! -c /dev/vmmc14 ] && mknod /dev/vmmc14 c 122 14
-	[ ! -c /dev/vmmc15 ] && mknod /dev/vmmc15 c 122 15
-	[ ! -c /dev/vmmc16 ] && mknod /dev/vmmc16 c 122 16
-	[ ! -c /dev/vmmc17 ] && mknod /dev/vmmc17 c 122 17
-	[ ! -c /dev/vmmc18 ] && mknod /dev/vmmc18 c 122 18
-	[ ! -c /dev/vmmc19 ] && mknod /dev/vmmc19 c 122 19
-	[ ! -c /dev/vmmc20 ] && mknod /dev/vmmc20 c 122 20
 	[ -f $DEFAULT ] && . $DEFAULT
 	[ -d $DEST/var/run/asterisk ] || mkdir -p $DEST/var/run/asterisk
 	[ -d $DEST/var/log/asterisk ] || mkdir -p $DEST/var/log/asterisk
