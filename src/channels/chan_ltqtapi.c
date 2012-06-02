@@ -108,8 +108,8 @@ static int silencesupression = 0;
 
 static format_t prefformat = AST_FORMAT_G729A | AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW;
 
-static char firmware_filename[64] = "/lib/firmware/danube_firmware.bin";
-static char bbd_filename[64] = "/lib/firmware/danube_bbd_fxs.bin";
+static char firmware_filename[64] = "/lib/firmware/ifx_firmware.bin";
+static char bbd_filename[64] = "/lib/firmware/ifx_bbd_fxs.bin";
 static char base_path[64] = "/dev/vmmc";
 
 /* Protect the interface list (of tapi_pvt's) */
