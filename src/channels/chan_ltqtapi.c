@@ -96,18 +96,6 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 static const char config[] = "ltqtapi.conf";
 
-/* Default context for dialtone mode */
-static char context[AST_MAX_EXTENSION] = "default";
-
-/* Default language */
-static char language[MAX_LANGUAGE] = "";
-
-static int echocancel = AEC_OFF;
-
-static int silencesupression = 0;
-
-static format_t prefformat = AST_FORMAT_G729A | AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW;
-
 static char firmware_filename[64] = "/lib/firmware/ifx_firmware.bin";
 static char bbd_filename[64] = "/lib/firmware/ifx_bbd_fxs.bin";
 static char base_path[64] = "/dev/vmmc";
@@ -177,9 +165,6 @@ typedef struct
 } tapi_ctx;
 
 tapi_ctx dev_ctx;
-
-static char cid_num[AST_MAX_EXTENSION];
-static char cid_name[AST_MAX_EXTENSION];
 
 static int phone_digit_begin(struct ast_channel *ast, char digit);
 static int phone_digit_end(struct ast_channel *ast, char digit, unsigned int duration);
@@ -353,8 +338,6 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
 }
 
 static char *control2str(int ind) {
-	char *tmp;
-
 	switch (ind) {
 	case AST_CONTROL_HANGUP:
 		return "Other end has hungup";
@@ -498,31 +481,11 @@ static int phone_hangup(struct ast_channel *ast)
 	return 0;
 }
 
-static int phone_setup(struct ast_channel *ast)
-{
-	ast_debug(1, "TAPI: phone_setup()\n");
-	return 0;
-}
-
 static int phone_answer(struct ast_channel *ast)
 {
 	ast_debug(1, "TAPI: phone_answer()\n");
 	return 0;
 }
-
-#if 0
-static char phone_2digit(char c)
-{
-	if (c == 12)
-		return '#';
-	else if (c == 11)
-		return '*';
-	else if ((c < 10) && (c >= 0))
-		return '0' + c - 1;
-	else
-		return '?';
-}
-#endif
 
 static struct ast_frame  *phone_exception(struct ast_channel *ast)
 {
@@ -534,12 +497,6 @@ static struct ast_frame  *phone_read(struct ast_channel *ast)
 {
 	ast_debug(1, "TAPI: phone_read()\n");
 	return NULL;
-}
-
-static int phone_write_buf(struct tapi_pvt *p, const char *buf, int len, int frlen, int swap)
-{
-	ast_debug(1, "TAPI: phone_write_buf()\n");
-	return -1;
 }
 
 static int phone_send_text(struct ast_channel *ast, const char *text)
@@ -1239,7 +1196,6 @@ static int load_module(void)
 {
 	struct ast_config *cfg;
 	struct ast_variable *v;
-	struct tapi_pvt *tmp;
 	int txgain = DEFAULT_GAIN;
 	int rxgain = DEFAULT_GAIN;
 	int wlec_type = 0;
@@ -1437,7 +1393,9 @@ static int load_module(void)
 	ast_config_destroy(cfg);
 	
 	/* tapi */
+#ifdef TODO_TONES
 	IFX_TAPI_TONE_t tone;
+#endif
 	IFX_TAPI_DEV_START_CFG_t dev_start;
 	IFX_TAPI_MAP_DATA_t map_data;
 	IFX_TAPI_ENC_CFG_t enc_cfg;
@@ -1445,7 +1403,6 @@ static int load_module(void)
 	IFX_TAPI_WLEC_CFG_t wlec_cfg;
 	IFX_TAPI_JB_CFG_t jb_cfg;
 	IFX_TAPI_CID_CFG_t cid_cfg;
-	int32_t status;
 	uint8_t c;
 
 	/* open device */
@@ -1486,14 +1443,13 @@ static int load_module(void)
 
 	for (c = 0; c < dev_ctx.channels ; c++) {
 		/* tones */
-#ifdef TODO
+#ifdef TODO_TONES
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			return AST_MODULE_LOAD_FAILURE;
 		}
 #endif
-
 		/* ringing type */
 		IFX_TAPI_RING_CFG_t ringingType;
 		memset(&ringingType, 0, sizeof(IFX_TAPI_RING_CFG_t));
