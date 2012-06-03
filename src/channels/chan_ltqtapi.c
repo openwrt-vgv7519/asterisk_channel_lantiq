@@ -262,10 +262,10 @@ tapi_play_tone(int c, int tone) {
 }
 
 static enum channel_state tapi_get_hookstatus(int port) {
-	IFX_TAPI_LINE_HOOK_STATUS_GET_t status = 0;
+	uint8_t status;
 
 	if (ioctl(dev_ctx.ch_fd[port], IFX_TAPI_LINE_HOOK_STATUS_GET, &status)) {
-		ast_log(LOG_ERROR, "cannot get hookstate!\n");
+		ast_log(LOG_ERROR, "IFX_TAPI_LINE_HOOK_STATUS_GET ioctl failed\n");
 		return UNKNOWN;
 	}
 
