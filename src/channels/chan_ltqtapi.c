@@ -54,19 +54,28 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <linux/compiler.h>
 #endif
 #include <linux/telephony.h>
-/* Still use some IXJ specific stuff */
-#include <linux/version.h>
-#include <linux/ixjuser.h>
 
+#include <asterisk/lock.h>
+#include <asterisk/channel.h>
+#include <asterisk/config.h>
+#include <asterisk/module.h>
+#include <asterisk/pbx.h>
+#include <asterisk/utils.h>
+#include <asterisk/callerid.h>
+#include <asterisk/causes.h>
+#include <asterisk/stringfields.h>
+#include <asterisk/musiconhold.h>
+#include <asterisk/sched.h>
+
+#include "chan_phone.h"
+
+/* Lantiq TAPI includes */
 #include <drv_tapi/drv_tapi_io.h>
 #include <drv_vmmc/vmmc_io.h>
 
 #define RTP_HEADER_LEN 12
 
-#define TAPI_AUDIO_PORT_NUM_MAX		2
-
-#define TAPI_LL_DEV_SELECT_TIMEOUT_MS	2000
-
+#define TAPI_AUDIO_PORT_NUM_MAX                 2
 #define TAPI_TONE_LOCALE_NONE                   0	// for TAPI user defined use 32
 #define TAPI_TONE_LOCALE_BUSY_CODE              27	// for TAPI user defined use 33
 #define TAPI_TONE_LOCALE_CONGESTION_CODE        27	// for TAPI user defined use 34
@@ -74,54 +83,16 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define TAPI_TONE_LOCALE_RING_CODE              36
 #define TAPI_TONE_LOCALE_WAITING_CODE           37
 
-#include "asterisk/lock.h"
-#include "asterisk/channel.h"
-#include "asterisk/config.h"
-#include "asterisk/module.h"
-#include "asterisk/pbx.h"
-#include "asterisk/utils.h"
-#include "asterisk/callerid.h"
-#include "asterisk/causes.h"
-#include "asterisk/stringfields.h"
-#include "asterisk/musiconhold.h"
-#include "asterisk/sched.h"
-
-#include "chan_phone.h"
-
-#define IXJ_PHONE_RING_START(x)	ioctl(p->fd, PHONE_RING_START, &x);
-
-#define DEFAULT_CALLER_ID "Unknown"
-#define PHONE_MAX_BUF 480
-#define DEFAULT_GAIN 0x0
-
 static const char config[] = "ltqtapi.conf";
 
-static char firmware_filename[64] = "/lib/firmware/ifx_firmware.bin";
-static char bbd_filename[64] = "/lib/firmware/ifx_bbd_fxs.bin";
-static char base_path[64] = "/dev/vmmc";
+static char firmware_filename[PATH_MAX] = "/lib/firmware/ifx_firmware.bin";
+static char bbd_filename[PATH_MAX] = "/lib/firmware/ifx_bbd_fxs.bin";
+static char base_path[PATH_MAX] = "/dev/vmmc";
 
-/* Protect the interface list (of tapi_pvt's) */
-AST_MUTEX_DEFINE_STATIC(iflock);
-
-/* Protect the monitoring thread, so only one process can kill or start it, and not
-   when it's doing something critical. */
-AST_MUTEX_DEFINE_STATIC(monlock);
-
-/* Boolean value whether the monitoring thread shall continue. */
-static unsigned int monitor;
-
-/* The scheduling thread */
-struct ast_sched_thread *sched_thread;
-   
-/* This is the thread for the monitor which checks for input on the channels
-   which are not currently in use.  */
-static pthread_t monitor_thread = AST_PTHREADT_NULL;
-
-static int restart_monitor(void);
-
-/* The private structures of the Phone Jack channels are linked for
-   selecting outgoing channels */
-
+/*
+ * The private structures of the Phone Jack channels are linked for selecting
+ * outgoing channels.
+ */
 enum channel_state {
 	ONHOOK,
 	OFFHOOK,
@@ -131,7 +102,6 @@ enum channel_state {
 	RINGING,
 	UNKNOWN
 };
-
 
 static struct tapi_pvt {
 	struct ast_channel *owner;         /* Channel we belong to, possibly NULL  */
@@ -152,38 +122,56 @@ static struct tapi_ctx {
 		int ch_fd[TAPI_AUDIO_PORT_NUM_MAX];
 } dev_ctx;
 
-static int phone_digit_begin(struct ast_channel *ast, char digit);
-static int phone_digit_end(struct ast_channel *ast, char digit, unsigned int duration);
-static int phone_call(struct ast_channel *ast, char *dest, int timeout);
-static int phone_hangup(struct ast_channel *ast);
-static int phone_answer(struct ast_channel *ast);
-static struct ast_frame *phone_read(struct ast_channel *ast);
-static int phone_write(struct ast_channel *ast, struct ast_frame *frame);
-static struct ast_frame *phone_exception(struct ast_channel *ast);
-static int phone_send_text(struct ast_channel *ast, const char *text);
-static int phone_fixup(struct ast_channel *old, struct ast_channel *new);
-static int phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
-static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
-static const char * state_string(enum channel_state s);
+static int ast_digit_begin(struct ast_channel *ast, char digit);
+static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int duration);
+static int ast_phone_call(struct ast_channel *ast, char *dest, int timeout);
+static int ast_phone_hangup(struct ast_channel *ast);
+static int ast_phone_answer(struct ast_channel *ast);
+static struct ast_frame *ast_phone_read(struct ast_channel *ast);
+static int ast_phone_write(struct ast_channel *ast, struct ast_frame *frame);
+static struct ast_frame *ast_phone_exception(struct ast_channel *ast);
+static int ast_phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
+static int ast_phone_fixup(struct ast_channel *old, struct ast_channel *new);
+static struct ast_channel *ast_phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
 
 static const struct ast_channel_tech tapi_tech = {
 	.type = "TAPI",
-	.description = "TAPI Telephony API Driver",
+	.description = "Lantiq TAPI Telephony API Driver",
 	.capabilities = AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW | AST_FORMAT_G729A,
-	.send_digit_begin = phone_digit_begin,
-	.send_digit_end = phone_digit_end,
-	.call = phone_call,
-	.hangup = phone_hangup,
-	.answer = phone_answer,
-	.read = phone_read,
-	.write = phone_write,
-	.exception = phone_exception,
-	.write_video = phone_write,
-	.send_text = phone_send_text,
-	.indicate = phone_indicate,
-	.fixup = phone_fixup,
-	.requester = phone_requester
+	.send_digit_begin = ast_digit_begin,
+	.send_digit_end = ast_digit_end,
+	.call = ast_phone_call,
+	.hangup = ast_phone_hangup,
+	.answer = ast_phone_answer,
+	.read = ast_phone_read,
+	.write = ast_phone_write,
+	.exception = ast_phone_exception,
+	.indicate = ast_phone_indicate,
+	.fixup = ast_phone_fixup,
+	.requester = ast_phone_requester
 };
+
+/* Protect the interface list (of tapi_pvt's) */
+AST_MUTEX_DEFINE_STATIC(iflock);
+
+/*
+ * Protect the monitoring thread, so only one process can kill or start it, and
+ * not when it's doing something critical.
+ */
+AST_MUTEX_DEFINE_STATIC(monlock);
+
+/* Boolean value whether the monitoring thread shall continue. */
+static unsigned int monitor;
+
+/* The scheduling thread */
+struct ast_sched_thread *sched_thread;
+   
+/*
+ * This is the thread for the monitor which checks for input on the channels
+ * which are not currently in use.
+ */
+static pthread_t monitor_thread = AST_PTHREADT_NULL;
+
 
 #define WORDS_BIGENDIAN
 /* struct taken from some GPLed code by  Mike Borella */
@@ -330,7 +318,7 @@ tapi_dev_firmware_download(int32_t fd, const char *path)
 	return 0;
 }
 
-static const char * state_string(enum channel_state s)
+static const char *state_string(enum channel_state s)
 {
 	switch (s) {
 		case ONHOOK: return "ONHOOK";
@@ -343,103 +331,79 @@ static const char * state_string(enum channel_state s)
 	}
 }
 
-static const char * control_string(int c)
+static const char *control_string(int c)
 {
 	switch (c) {
-	case AST_CONTROL_HANGUP:
-		return "Other end has hungup";
-	case AST_CONTROL_RING:
-		return "Local ring";
-	case AST_CONTROL_RINGING:
-		return "Remote end is ringing";
-	case AST_CONTROL_ANSWER:
-		return "Remote end has answered";
-	case AST_CONTROL_BUSY:
-		return "Remote end is busy";
-	case AST_CONTROL_TAKEOFFHOOK:
-		return "Make it go off hook";
-	case AST_CONTROL_OFFHOOK:
-		return "Line is off hook";
-	case AST_CONTROL_CONGESTION:
-		return "Congestion (circuits busy)";
-	case AST_CONTROL_FLASH:
-		return "Flash hook";
-	case AST_CONTROL_WINK:
-		return "Wink";
-	case AST_CONTROL_OPTION:
-		return "Set a low-level option";
-	case AST_CONTROL_RADIO_KEY:
-		return "Key Radio";
-	case AST_CONTROL_RADIO_UNKEY:
-		return "Un-Key Radio";
-	case AST_CONTROL_PROGRESS:
-		return "Remote end is making Progress";
-	case AST_CONTROL_PROCEEDING:
-		return "Remote end is proceeding";
-	case AST_CONTROL_HOLD:
-		return "Hold";
-	case AST_CONTROL_UNHOLD:
-		return "Unhold";
-	case AST_CONTROL_SRCUPDATE:
-		return "Media Source Update";
-	case AST_CONTROL_CONNECTED_LINE:
-		return "Connected Line";
-	case AST_CONTROL_REDIRECTING:
-		return "Redirecting";
-	case AST_CONTROL_INCOMPLETE:
-		return "Incomplete";
-	case -1:
-		return "Stop tone";
-	default:
-		return "Unknown";
+		case AST_CONTROL_HANGUP: return "Other end has hungup";
+		case AST_CONTROL_RING: return "Local ring";
+		case AST_CONTROL_RINGING: return "Remote end is ringing";
+		case AST_CONTROL_ANSWER: return "Remote end has answered";
+		case AST_CONTROL_BUSY: return "Remote end is busy";
+		case AST_CONTROL_TAKEOFFHOOK: return "Make it go off hook";
+		case AST_CONTROL_OFFHOOK: return "Line is off hook";
+		case AST_CONTROL_CONGESTION: return "Congestion (circuits busy)";
+		case AST_CONTROL_FLASH: return "Flash hook";
+		case AST_CONTROL_WINK: return "Wink";
+		case AST_CONTROL_OPTION: return "Set a low-level option";
+		case AST_CONTROL_RADIO_KEY: return "Key Radio";
+		case AST_CONTROL_RADIO_UNKEY: return "Un-Key Radio";
+		case AST_CONTROL_PROGRESS: return "Remote end is making Progress";
+		case AST_CONTROL_PROCEEDING: return "Remote end is proceeding";
+		case AST_CONTROL_HOLD: return "Hold";
+		case AST_CONTROL_UNHOLD: return "Unhold";
+		case AST_CONTROL_SRCUPDATE: return "Media Source Update";
+		case AST_CONTROL_CONNECTED_LINE: return "Connected Line";
+		case AST_CONTROL_REDIRECTING: return "Redirecting";
+		case AST_CONTROL_INCOMPLETE: return "Incomplete";
+		case -1: return "Stop tone";
+		default: return "Unknown";
 	}
 }
 
-static int phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
+static int ast_phone_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
 	ast_verb(3, "TAPI: phone indication \"%s\".\n", control_string(condition));
 	return 0;
 }
 
-static int phone_fixup(struct ast_channel *old, struct ast_channel *new)
+static int ast_phone_fixup(struct ast_channel *old, struct ast_channel *new)
 {
-	ast_debug(1, "TAPI: phone_fixup()\n");
+	ast_debug(1, "TAPI: ast_phone_fixup()\n");
 	return 0;
 }
 
-static int phone_digit_begin(struct ast_channel *chan, char digit)
+static int ast_digit_begin(struct ast_channel *chan, char digit)
 {
-	/* XXX Modify this callback to let Asterisk support controlling the length of DTMF */
-	ast_debug(1, "TAPI: phone_digit_begin()\n");
+	/* TODO: Modify this callback to let Asterisk support controlling the length of DTMF */
+	ast_debug(1, "TAPI: ast_digit_begin()\n");
 	return 0;
 }
 
-static int phone_digit_end(struct ast_channel *ast, char digit, unsigned int duration)
+static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int duration)
 {
-	ast_debug(1, "TAPI: phone_digit_end()\n");
+	ast_debug(1, "TAPI: ast_digit_end()\n");
 	return 0;
 }
 
-static int phone_call(struct ast_channel *ast, char *dest, int timeout)
+static int ast_phone_call(struct ast_channel *ast, char *dest, int timeout)
 {
-	ast_debug(1, "TAPI: phone_call()\n");
+	ast_debug(1, "TAPI: ast_phone_call()\n");
 
 	ast_mutex_lock(&iflock);
 	
 	struct tapi_pvt *pvt = ast->tech_pvt;
 	
-	ast_debug(1, "TAPI: phone_call() state: %s\n", state_string(pvt->channel_state));
+	ast_debug(1, "TAPI: ast_phone_call() state: %s\n", state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
-		ast_debug(1, "TAPI: phone_call(): port %i ringing.\n", pvt->port_id);
+		ast_debug(1, "TAPI: ast_phone_call(): port %i ringing.\n", pvt->port_id);
 		tapi_ring(pvt->port_id, 1);
 		pvt->channel_state = RINGING;
 
 		ast_setstate(ast, AST_STATE_RINGING);
 		ast_queue_control(ast, AST_CONTROL_RINGING);
-
 	} else {
-		ast_debug(1, "TAPI: phone_call(): port %i busy.\n", pvt->port_id);
+		ast_debug(1, "TAPI: ast_phone_call(): port %i busy.\n", pvt->port_id);
 		ast_setstate(ast, AST_STATE_BUSY);
 		ast_queue_control(ast, AST_CONTROL_BUSY);
 	}
@@ -449,9 +413,9 @@ static int phone_call(struct ast_channel *ast, char *dest, int timeout)
 	return 0;
 }
 
-static int phone_hangup(struct ast_channel *ast)
+static int ast_phone_hangup(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: phone_hangup()\n");
+	ast_debug(1, "TAPI: ast_phone_hangup()\n");
 
 	struct tapi_pvt *pvt = ast->tech_pvt;
 
@@ -459,7 +423,7 @@ static int phone_hangup(struct ast_channel *ast)
 	ast_mutex_lock(&iflock);
 	
 	if (ast->_state == AST_STATE_RINGING) {
-		ast_debug(1, "TAPI: phone_hangup(): ast->_state == AST_STATE_RINGING\n");
+		ast_debug(1, "TAPI: ast_phone_hangup(): ast->_state == AST_STATE_RINGING\n");
 	}
 
 	switch (pvt->channel_state) {
@@ -472,7 +436,7 @@ static int phone_hangup(struct ast_channel *ast)
 			}
 		default:
 			{
-				ast_debug(1, "TAPI: phone_hangup(): we were hung up, play busy tone.\n");
+				ast_debug(1, "TAPI: ast_phone_hangup(): we were hung up, play busy tone.\n");
 				pvt->channel_state = CALL_ENDED;
 				tapi_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
 			}
@@ -488,33 +452,21 @@ static int phone_hangup(struct ast_channel *ast)
 	return 0;
 }
 
-static int phone_answer(struct ast_channel *ast)
+static int ast_phone_answer(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: phone_answer()\n");
+	ast_debug(1, "TAPI: ast_phone_answer()\n");
 	return 0;
 }
 
-static struct ast_frame  *phone_exception(struct ast_channel *ast)
+static struct ast_frame * ast_phone_read(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: phone_exception()\n");
+	ast_debug(1, "TAPI: ast_phone_read()\n");
 	return NULL;
 }
 
-static struct ast_frame  *phone_read(struct ast_channel *ast)
+static int ast_phone_write(struct ast_channel *ast, struct ast_frame *frame)
 {
-	ast_debug(1, "TAPI: phone_read()\n");
-	return NULL;
-}
-
-static int phone_send_text(struct ast_channel *ast, const char *text)
-{
-	ast_debug(1, "TAPI: phone_send_text()\n");
-	return -1;
-}
-
-static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
-{
-//	ast_debug(1, "TAPI: phone_write()\n");
+	ast_debug(1, "TAPI: ast_phone_write()\n");
 
 	char buf[2048];
 	struct tapi_pvt *pvt = ast->tech_pvt;
@@ -522,7 +474,7 @@ static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header_t *rtp_header = (rtp_header_t *) buf;
 
 	if(frame->frametype != AST_FRAME_VOICE) {
-		ast_debug(1, "TAPI: phone_write(): unhandled frame type.\n");
+		ast_debug(1, "TAPI: ast_phone_write(): unhandled frame type.\n");
 		return 0;
 	}
 
@@ -543,50 +495,55 @@ static int phone_write(struct ast_channel *ast, struct ast_frame *frame)
 
 	ret = write(dev_ctx.ch_fd[pvt->port_id], buf, frame->datalen+RTP_HEADER_LEN);
 	if (ret <= 0) {
-		ast_debug(1, "TAPI: phone_write(): error writing.\n");
+		ast_debug(1, "TAPI: ast_phone_write(): error writing.\n");
 		return -1;
 	}
-/*
-	ast_debug(1, "phone_write(): size: %i version: %i padding: %i extension: %i csrc_count: %i \n"
-				 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
-				 (int)ret,
-				 (int)rtp_header->version,
-				 (int)rtp_header->padding,
-				 (int)rtp_header->extension,
-				 (int)rtp_header->csrc_count,
-				 (int)rtp_header->marker,
-				 ast_codec2str(rtp_header->payload_type),
-				 (int)rtp_header->seqno,
-				 (int)rtp_header->timestamp,
-				 (int)rtp_header->ssrc);
-*/
+
+#ifdef TODO_DEVEL_INFO
+	ast_debug(1, "ast_phone_write(): size: %i version: %i padding: %i extension: %i csrc_count: %i\n"
+		 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
+			 (int)ret,
+			 (int)rtp_header->version,
+			 (int)rtp_header->padding,
+			 (int)rtp_header->extension,
+			 (int)rtp_header->csrc_count,
+			 (int)rtp_header->marker,
+			 ast_codec2str(rtp_header->payload_type),
+			 (int)rtp_header->seqno,
+			 (int)rtp_header->timestamp,
+			 (int)rtp_header->ssrc);
+#endif
+
 	return 0;
 }
 
-static int go_onhook(int c) {
-	int ret = -1;
+static struct ast_frame * ast_phone_exception(struct ast_channel *ast)
+{
+	ast_debug(1, "TAPI: ast_phone_exception()\n");
+	return NULL;
+}
+
+static int tapi_standby(int c)
+{
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-		goto out;
+		return -1;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_ENC_STOP ioctl failed\n");
-		goto out;
+		return -1;
 	}
 
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_DEC_STOP ioctl failed\n");
-		goto out;
+		return -1;
 	}
 
-	ret = tapi_play_tone(c, TAPI_TONE_LOCALE_NONE);
-
-out:
-	return ret;
+	return tapi_play_tone(c, TAPI_TONE_LOCALE_NONE);
 }
 
-static int end_dialing(int c)
+static int tapi_end_dialing(int c)
 {
 	ast_debug(1, "%s\n", __FUNCTION__);
 	struct tapi_pvt *pvt = &iflist[c];
@@ -603,7 +560,7 @@ static int end_dialing(int c)
 	return 0;
 }
 
-static int end_call(int c)
+static int tapi_end_call(int c)
 {
 	ast_debug(1, "%s\n", __FUNCTION__);
 
@@ -616,54 +573,9 @@ static int end_call(int c)
 	return 0;
 }
 
-static int tapi_dev_event_on_hook(int c)
+static struct ast_channel * tapi_channel(int state, int c, char *ext, char *ctx)
 {
-	ast_log(LOG_ERROR, "TAPI: CHANNEL %i ONHOOK\n", c);
-
-	if (ast_mutex_lock(&iflock)) {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return -1;
-	}
-	
-	int ret = 0;
-	switch (iflist[c].channel_state) {
-		case OFFHOOK: 
-			{
-				ret = go_onhook(c);
-				break;
-			}
-		case DIALING: 
-			{
-				ret = end_dialing(c);
-				break;
-			}
-		case INCALL: 
-			{
-				ret = end_call(c);
-				break;
-			}
-		case CALL_ENDED:
-			{
-				ret = go_onhook(c);
-				break;
-			}
-		default:
-			{
-				ret = -1;
-				break;
-			}
-	}
-
-	iflist[c].channel_state = ONHOOK;
-
-	ast_mutex_unlock(&iflock);
-
-	return ret;
-}
-
-static struct ast_channel *tapi_new(int state, int c, char *ext, char *ctx)
-{
-	ast_debug(1, "tapi_new()\n");
+	ast_debug(1, "tapi_channel()\n");
 
 	struct ast_channel *chan = NULL;
 
@@ -682,8 +594,9 @@ static struct ast_channel *tapi_new(int state, int c, char *ext, char *ctx)
 	return chan;
 }
 
-static struct ast_channel *phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause) {
-	char buf[256];
+static struct ast_channel * ast_phone_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
+{
+	char buf[BUFSIZ];
 	
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
@@ -716,14 +629,14 @@ static struct ast_channel *phone_requester(const char *type, format_t format, co
 	 */
 	port_id -= 1;
 
-	chan = tapi_new(AST_STATE_DOWN, port_id, NULL, NULL);
+	chan = tapi_channel(AST_STATE_DOWN, port_id, NULL, NULL);
 
 	ast_mutex_unlock(&iflock);
 	return chan;
 }
 
 static int tapi_dev_data_handler(int c) {
-	char buf[2048];
+	char buf[BUFSIZ];
 	struct ast_frame frame = {0};
 
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
@@ -737,8 +650,6 @@ static int tapi_dev_data_handler(int c) {
 	frame.samples = res - RTP_HEADER_LEN;
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
-
-
 
 	ast_mutex_lock(&iflock);
 	struct tapi_pvt *pvt = (struct tapi_pvt *) &iflist[c];
@@ -793,46 +704,61 @@ static int accept_call(int c)
 	return 0;
 }
 
-static int
-tapi_dev_event_off_hook(int c)
+static int tapi_dev_event_hook(int c, int state)
 {
-	ast_log(LOG_ERROR, "TAPI: CHANNEL %i OFFHOOK.\n", c);
+	ast_log(LOG_ERROR, "TAPI: channel %i %s hook.\n", c, state ? "on" : "off");
 
 	if (ast_mutex_lock(&iflock)) {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
 	}
-	
+
 	int ret = -1;
+	if (state) {
+		switch (iflist[c].channel_state) {
+			case OFFHOOK: 
+				ret = tapi_standby(c);
+				break;
+			case DIALING: 
+				ret = tapi_end_dialing(c);
+				break;
+			case INCALL: 
+				ret = tapi_end_call(c);
+				break;
+			case CALL_ENDED:
+				ret = tapi_standby(c); // TODO: are we sure for this ?
+				break;
+			default:
+				break;
+		}
+		iflist[c].channel_state = ONHOOK;
+	} else {
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+			goto out;
+		}
 
-	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
-		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-		goto out;
-	}
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
+			goto out;
+		}
 
-	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
-		ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
-		goto out;
-	}
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
+			goto out;
+		}
 
-	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
-		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
-		goto out;
-	}
-	
-	switch (iflist[c].channel_state) {
-		case RINGING: 
-			{
+		switch (iflist[c].channel_state) {
+			case RINGING: 
 				ret = accept_call(c);
 				break;
-			}
-		default:
-			{
+			default:
 				iflist[c].channel_state = OFFHOOK;
 				tapi_play_tone(c, TAPI_TONE_LOCALE_DIAL_CODE);
 				ret = 0;
 				break;
-			}
+		}
+
 	}
 
 out:
@@ -843,9 +769,9 @@ out:
 
 static void tapi_reset_dtmfbuf(struct tapi_pvt *pvt)
 {
-		pvt->dtmfbuf[0] = '\0';
-		pvt->dtmfbuf_len = 0;
-		pvt->ext[0] = '\0';
+	pvt->dtmfbuf[0] = '\0';
+	pvt->dtmfbuf_len = 0;
+	pvt->ext[0] = '\0';
 }
 
 static void tapi_dial(struct tapi_pvt *pvt)
@@ -863,7 +789,7 @@ static void tapi_dial(struct tapi_pvt *pvt)
 
 		ast_verbose( VERBOSE_PREFIX_3 "  extension exists, starting PBX %s\n", pvt->ext);
 
-		chan = tapi_new(1, AST_STATE_UP, pvt->ext+1, pvt->context);
+		chan = tapi_channel(1, AST_STATE_UP, pvt->ext+1, pvt->context);
 		chan->tech_pvt = pvt;
 		pvt->owner = chan;
 
@@ -916,40 +842,37 @@ static void tapi_dev_event_digit(int c, char digit)
 	switch (pvt->channel_state) {
 		case OFFHOOK:  
 			pvt->channel_state = DIALING;
-			
+
 			tapi_play_tone(c, TAPI_TONE_LOCALE_NONE);
 
 			/* fall through */
 		case DIALING: 
-			{
-				if (digit == '#') {
-					if (pvt->dial_timer) {
-						ast_sched_thread_del(sched_thread, pvt->dial_timer);
-						pvt->dial_timer = 0;
-					}
-
-					tapi_dial(pvt);
-				} else {
-					pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
-					pvt->dtmfbuf_len++;
-					pvt->dtmfbuf[pvt->dtmfbuf_len] = '\0';
-
-					/* setup autodial timer */
-					if (!pvt->dial_timer) {
-						ast_debug(1, "TAPI: tapi_dev_event_digit() setting new timer.\n");
-						pvt->dial_timer = ast_sched_thread_add(sched_thread, 2000, tapi_event_dial_timeout, (const void*) pvt);
-					} else {
-						ast_debug(1, "TAPI: tapi_dev_event_digit() replacing timer.\n");
-						struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
-						AST_SCHED_REPLACE(pvt->dial_timer, sched, 2000, tapi_event_dial_timeout, (const void*) pvt);
-					}
+			if (digit == '#') {
+				if (pvt->dial_timer) {
+					ast_sched_thread_del(sched_thread, pvt->dial_timer);
+					pvt->dial_timer = 0;
 				}
-				break;
+
+				tapi_dial(pvt);
+			} else {
+				pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
+				pvt->dtmfbuf_len++;
+				pvt->dtmfbuf[pvt->dtmfbuf_len] = '\0';
+
+				/* setup autodial timer */
+				if (!pvt->dial_timer) {
+					ast_debug(1, "TAPI: tapi_dev_event_digit() setting new timer.\n");
+					pvt->dial_timer = ast_sched_thread_add(sched_thread, 2000, tapi_event_dial_timeout, (const void*) pvt);
+				} else {
+					ast_debug(1, "TAPI: tapi_dev_event_digit() replacing timer.\n");
+					struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
+					AST_SCHED_REPLACE(pvt->dial_timer, sched, 2000, tapi_event_dial_timeout, (const void*) pvt);
+				}
 			}
-		default: {
-					 ast_debug(1, "TAPI: tapi_dev_event_digit() unhandled state.\n");
-					 break;
-				 }
+			break;
+		default:
+			ast_debug(1, "TAPI: tapi_dev_event_digit() unhandled state.\n");
+			break;
 	}
 
 	ast_mutex_unlock(&iflock);
@@ -962,10 +885,10 @@ static void tapi_dev_event_handler(void)
 	unsigned int i;
 
 	for (i = 0; i < dev_ctx.channels ; i++) {
-	/*	if (ast_mutex_lock(&iflock)) {
+		if (ast_mutex_lock(&iflock)) {
 			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 			break;
-		}*/
+		}
 
 		memset (&event, 0, sizeof(event));
 		event.ch = i;
@@ -973,15 +896,14 @@ static void tapi_dev_event_handler(void)
 			continue;
 		if (event.id == IFX_TAPI_EVENT_NONE)
 			continue;
-/*
 		ast_mutex_unlock(&iflock);
-*/
+
 		switch(event.id) {
 			case IFX_TAPI_EVENT_FXS_ONHOOK:
-				tapi_dev_event_on_hook(i);
+				tapi_dev_event_hook(i, 1);
 				break;
 			case IFX_TAPI_EVENT_FXS_OFFHOOK:
-				tapi_dev_event_off_hook(i);
+				tapi_dev_event_hook(i, 0);
 				break;
 			case IFX_TAPI_EVENT_DTMF_DIGIT:
 				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DTMF DIGIT: %c\n", i, (char)event.data.dtmf.ascii);
@@ -1027,7 +949,7 @@ tapi_events_monitor(void *data)
 			break;
 		}
 
-		if (poll(fds, dev_ctx.channels + 1, TAPI_LL_DEV_SELECT_TIMEOUT_MS) <= 0) {
+		if (poll(fds, dev_ctx.channels + 1, 2000) <= 0) {
 			ast_mutex_unlock(&monlock);
 			continue;
 		}
@@ -1038,18 +960,14 @@ tapi_events_monitor(void *data)
 
 		ast_mutex_unlock(&monlock);
 
-		if (fds[1].revents & POLLIN) {
-			if (tapi_dev_data_handler(0)) {
-				ast_verbose("TAPI: data handler failed\n");
-				break;
-			}
+		if ((fds[1].revents & POLLIN) && (tapi_dev_data_handler(0))) {
+			ast_verbose("TAPI: data handler failed\n");
+			break;
 		}
 
-		if (fds[2].revents & POLLIN) {
-			if (tapi_dev_data_handler(1)) {
-				ast_verbose("TAPI: data handler failed\n");
-				break;
-			}
+		if ((fds[2].revents & POLLIN) && (tapi_dev_data_handler(1))) {
+			ast_verbose("TAPI: data handler failed\n");
+			break;
 		}
 	}
 
@@ -1142,14 +1060,14 @@ static int unload_module(void)
 static struct tapi_pvt *tapi_init_pvt(struct tapi_pvt *pvt)
 {
 	if (pvt) {
-		pvt->owner         = NULL;
-		pvt->port_id       = -1;
+		pvt->owner = NULL;
+		pvt->port_id = -1;
 		pvt->channel_state = UNKNOWN;
-		pvt->context       = strdup("default");
-		pvt->ext[0]        = '\0';
-		pvt->dial_timer    = 0;
-		pvt->dtmfbuf[0]    = '\0';
-		pvt->dtmfbuf_len   = 0;
+		pvt->context = strdup("default");
+		pvt->ext[0] = '\0';
+		pvt->dial_timer = 0;
+		pvt->dtmfbuf[0] = '\0';
+		pvt->dtmfbuf_len = 0;
 	} else {
 		ast_log(LOG_ERROR, "%s line %i: cannot clear structure.\n", __FUNCTION__, __LINE__);
 	}
@@ -1209,8 +1127,8 @@ static int load_module(void)
 {
 	struct ast_config *cfg;
 	struct ast_variable *v;
-	int txgain = DEFAULT_GAIN;
-	int rxgain = DEFAULT_GAIN;
+	int txgain = 0;
+	int rxgain = 0;
 	int wlec_type = 0;
 	int wlec_nlp = 0;
 	int wlec_nbfe = 0;
@@ -1270,13 +1188,13 @@ static int load_module(void)
 		if (!strcasecmp(v->name, "rxgain")) {
 			rxgain = atoi(v->value);
 			if (!rxgain) {
-				rxgain = DEFAULT_GAIN;
+				rxgain = 0;
 				ast_log(LOG_WARNING, "Invalid rxgain: %s, using default.\n", v->value);
 			}
 		} else if (!strcasecmp(v->name, "txgain")) {
 			txgain = atoi(v->value);
 			if (!txgain) {
-				txgain = DEFAULT_GAIN;
+				txgain = 0;
 				ast_log(LOG_WARNING, "Invalid txgain: %s, using default.\n", v->value);
 			}
 		} else if (!strcasecmp(v->name, "echocancel")) {
