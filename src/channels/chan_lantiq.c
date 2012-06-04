@@ -892,10 +892,15 @@ static void lantiq_dev_event_handler(void)
 
 		memset (&event, 0, sizeof(event));
 		event.ch = i;
-		if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event))
+		if (ioctl(dev_ctx.dev_fd, IFX_TAPI_EVENT_GET, &event)) {
+			ast_mutex_unlock(&iflock);
 			continue;
-		if (event.id == IFX_TAPI_EVENT_NONE)
+		}
+		if (event.id == IFX_TAPI_EVENT_NONE) {
+			ast_mutex_unlock(&iflock);
 			continue;
+		}
+
 		ast_mutex_unlock(&iflock);
 
 		switch(event.id) {
