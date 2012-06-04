@@ -83,7 +83,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define TAPI_TONE_LOCALE_RING_CODE              36
 #define TAPI_TONE_LOCALE_WAITING_CODE           37
 
-static const char config[] = "ltqtapi.conf";
+static const char config[] = "lantiq.conf";
 
 static char firmware_filename[PATH_MAX] = "/lib/firmware/ifx_firmware.bin";
 static char bbd_filename[PATH_MAX] = "/lib/firmware/ifx_bbd_fxs.bin";
