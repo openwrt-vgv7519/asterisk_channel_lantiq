@@ -363,22 +363,6 @@ static const char *control_string(int c)
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
 	ast_verb(3, "TAPI: phone indication \"%s\".\n", control_string(condition));
-	
-	ast_mutex_lock(&iflock);
-	
-	struct lantiq_pvt *pvt = chan->tech_pvt;
-	
-	switch (condition) {
-		case AST_CONTROL_BUSY:
-		case AST_CONTROL_CONGESTION:
-			{
-				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
-				break;
-			}
-	}
-	
-	ast_mutex_unlock(&iflock);
-
 	return 0;
 }
 
@@ -1032,6 +1016,30 @@ static int restart_monitor(void)
 	return 0;
 }
 
+static void lantiq_cleanup(void) {
+	int c;
+
+	for (c = 0; c < dev_ctx.channels ; c++) { 
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
+			ast_log(LOG_WARNING, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
+		}
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_STOP, 0)) {
+			ast_log(LOG_WARNING, "IFX_TAPI_ENC_STOP ioctl failed\n");
+		}
+
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_STOP, 0)) {
+			ast_log(LOG_WARNING, "IFX_TAPI_DEC_STOP ioctl failed\n");
+		}
+	}
+
+	if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
+		ast_log(LOG_WARNING, "IFX_TAPI_DEV_STOP ioctl failed\n");
+	}
+
+	close(dev_ctx.dev_fd);
+}
+
 static int unload_module(void)
 {
 	int c;
@@ -1039,8 +1047,10 @@ static int unload_module(void)
 	ast_channel_unregister(&lantiq_tech);
 
 	if (!ast_mutex_lock(&iflock)) {
-//		for (c = 0; c < dev_ctx.channels ; c++)
-//			ast_softhangup(p->owner, AST_SOFTHANGUP_APPUNLOAD);
+		for (c = 0; c < dev_ctx.channels ; c++) {
+			if (iflist[c].owner)
+				ast_softhangup(iflist[c].owner, AST_SOFTHANGUP_APPUNLOAD);
+		}
 		ast_mutex_unlock(&iflock);
 	} else {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
@@ -1056,20 +1066,6 @@ static int unload_module(void)
 		}
 		monitor_thread = AST_PTHREADT_STOP;
 		ast_mutex_unlock(&monlock);
-	} else {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return -1;
-	}
-
-	if (!ast_mutex_lock(&iflock)) {
-		if (ioctl(dev_ctx.dev_fd, IFX_TAPI_DEV_STOP, 0)) {
-			ast_log(LOG_WARNING, "IFX_TAPI_DEV_STOP ioctl failed\n");
-		}
-
-		close(dev_ctx.dev_fd);
-		for (c = 0; c < dev_ctx.channels ; c++) close(dev_ctx.ch_fd[c]);
-
-		ast_mutex_unlock(&iflock);
 	} else {
 		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
 		return -1;
@@ -1518,6 +1514,9 @@ static int load_module(void)
 			return AST_MODULE_LOAD_FAILURE;
 		}
 	}
+
+	/* make sure our device will be closed properly */
+	ast_register_atexit(lantiq_cleanup);
 
 	restart_monitor();
 	return AST_MODULE_LOAD_SUCCESS;
