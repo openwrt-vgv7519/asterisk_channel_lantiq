@@ -974,7 +974,7 @@ tapi_events_monitor(void *data)
 	return NULL;
 }
 
-static int restart_monitor()
+static int restart_monitor(void)
 {
 	/* If we're supposed to be stopped -- stay stopped */
 	if (monitor_thread == AST_PTHREADT_STOP)
