@@ -363,6 +363,22 @@ static const char *control_string(int c)
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
 	ast_verb(3, "TAPI: phone indication \"%s\".\n", control_string(condition));
+	
+	ast_mutex_lock(&iflock);
+	
+	struct lantiq_pvt *pvt = chan->tech_pvt;
+	
+	switch (condition) {
+		case AST_CONTROL_BUSY:
+		case AST_CONTROL_CONGESTION:
+			{
+				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+				break;
+			}
+	}
+	
+	ast_mutex_unlock(&iflock);
+
 	return 0;
 }
 
