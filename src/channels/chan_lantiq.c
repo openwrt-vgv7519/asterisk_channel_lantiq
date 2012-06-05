@@ -76,11 +76,11 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define RTP_HEADER_LEN 12
 
 #define TAPI_AUDIO_PORT_NUM_MAX                 2
-#define TAPI_TONE_LOCALE_NONE                   0	// for TAPI user defined use 32
-#define TAPI_TONE_LOCALE_BUSY_CODE              27	// for TAPI user defined use 33
-#define TAPI_TONE_LOCALE_CONGESTION_CODE        27	// for TAPI user defined use 34
-#define TAPI_TONE_LOCALE_DIAL_CODE              25	// for TAPI user defined use 35
-#define TAPI_TONE_LOCALE_RING_CODE              36
+#define TAPI_TONE_LOCALE_NONE                   0 
+#define TAPI_TONE_LOCALE_RINGING_CODE           26
+#define TAPI_TONE_LOCALE_BUSY_CODE              27
+#define TAPI_TONE_LOCALE_CONGESTION_CODE        27
+#define TAPI_TONE_LOCALE_DIAL_CODE              25
 #define TAPI_TONE_LOCALE_WAITING_CODE           37
 
 static const char config[] = "lantiq.conf";
@@ -363,7 +363,27 @@ static const char *control_string(int c)
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
 	ast_verb(3, "TAPI: phone indication \"%s\".\n", control_string(condition));
-	return 0;
+
+	struct lantiq_pvt *pvt = chan->tech_pvt;
+
+	switch (condition) {
+		case AST_CONTROL_CONGESTION:
+		case AST_CONTROL_BUSY:
+			{
+				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+				return 0;
+			}
+		case AST_CONTROL_RINGING:
+			{
+				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_RINGING_CODE);
+				return 0;
+			}
+		default:
+			{
+				/* -1 lets asterisk generate the tone */
+				return -1;
+			}
+	}
 }
 
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new)
