@@ -502,6 +502,11 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 		ast_debug(1, "TAPI: ast_lantiq_write(): unhandled frame type.\n");
 		return 0;
 	}
+	
+	if (frame->datalen == 0) {
+		ast_debug(1, "TAPI: ast_lantiq_write(): We've been prodded.\n");
+		return 0;
+	}
 
 	memset(buf, '\0', sizeof(rtp_header_t));
 	rtp_header->version      = 2;
