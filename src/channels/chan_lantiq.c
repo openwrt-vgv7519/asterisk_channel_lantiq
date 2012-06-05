@@ -367,6 +367,11 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 	struct lantiq_pvt *pvt = chan->tech_pvt;
 
 	switch (condition) {
+		case -1:
+			{
+				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_NONE);
+				return 0;
+			}
 		case AST_CONTROL_CONGESTION:
 		case AST_CONTROL_BUSY:
 			{
