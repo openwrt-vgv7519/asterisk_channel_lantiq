@@ -67,8 +67,6 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <asterisk/musiconhold.h>
 #include <asterisk/sched.h>
 
-#include "chan_phone.h"
-
 /* Lantiq TAPI includes */
 #include <drv_tapi/drv_tapi_io.h>
 #include <drv_vmmc/vmmc_io.h>
