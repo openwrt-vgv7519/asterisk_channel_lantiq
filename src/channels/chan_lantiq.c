@@ -299,6 +299,8 @@ lantiq_dev_firmware_download(int32_t fd, const char *path)
 	uint32_t size = 0;
 	VMMC_IO_INIT vmmc_io_init;
 
+	ast_debug(1, "chan_lantiq: Loading firmware %s...", path);
+
 	if (lantiq_dev_binary_buffer_create(path, &firmware, &size)) {
 		ast_log(LOG_ERROR, "binary buffer create failed!\n");
 		return -1;
