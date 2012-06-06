@@ -192,9 +192,9 @@ typedef struct rtp_header
 
 static int lantiq_dev_open(const char *dev_path, const int32_t ch_num)
 {
-	char dev_name[FILENAME_MAX + 1];
+	char dev_name[PATH_MAX];
 	memset(dev_name, 0, sizeof(dev_name));
-	snprintf(dev_name, FILENAME_MAX, "%s%u%u", dev_path, 1, ch_num);
+	snprintf(dev_name, PATH_MAX, "%s%u%u", dev_path, 1, ch_num);
 	return open((const char*)dev_name, O_RDWR, 0644);
 }
 
