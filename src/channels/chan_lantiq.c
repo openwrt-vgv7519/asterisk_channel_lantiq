@@ -283,37 +283,28 @@ on_exit:
 	return status;
 }
 
-static void
-lantiq_dev_binary_buffer_delete(uint8_t *pBuf)
-{
-	if (pBuf != NULL)
-		free(pBuf);
-}
-
-static int32_t
-lantiq_dev_firmware_download(int32_t fd, const char *path)
+static int32_t lantiq_dev_firmware_download(int32_t fd, const char *path)
 {
 	uint8_t *firmware = NULL;
 	uint32_t size = 0;
 	VMMC_IO_INIT vmmc_io_init;
 
-	ast_debug(1, "chan_lantiq: Loading firmware %s...", path);
+	ast_log(LOG_DEBUG, "loading firmware: \"%s\".", path);
 
-	if (lantiq_dev_binary_buffer_create(path, &firmware, &size)) {
-		ast_log(LOG_ERROR, "binary buffer create failed!\n");
+	if (lantiq_dev_binary_buffer_create(path, &firmware, &size))
 		return -1;
-	}
 
 	memset(&vmmc_io_init, 0, sizeof(VMMC_IO_INIT));
 	vmmc_io_init.pPRAMfw = firmware;
 	vmmc_io_init.pram_size = size;
 
 	if (ioctl(fd, FIO_FW_DOWNLOAD, &vmmc_io_init)) {
-		ast_log(LOG_ERROR, "FIO_FW_DOWNLOAD ioctl failed!\n");
+		ast_log(LOG_ERROR, "FIO_FW_DOWNLOAD ioctl failed\n");
 		return -1;
 	}
 
-	lantiq_dev_binary_buffer_delete(firmware);
+	if (firmware != NULL)
+		free(firmware);
 
 	return 0;
 }
@@ -362,7 +353,7 @@ static const char *control_string(int c)
 
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	ast_verb(3, "TAPI: phone indication \"%s\".\n", control_string(condition));
+	ast_verb(3, "phone indication \"%s\".\n", control_string(condition));
 
 	struct lantiq_pvt *pvt = chan->tech_pvt;
 
@@ -393,42 +384,40 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new)
 {
-	ast_debug(1, "TAPI: ast_lantiq_fixup()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return 0;
 }
 
 static int ast_digit_begin(struct ast_channel *chan, char digit)
 {
 	/* TODO: Modify this callback to let Asterisk support controlling the length of DTMF */
-	ast_debug(1, "TAPI: ast_digit_begin()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return 0;
 }
 
 static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int duration)
 {
-	ast_debug(1, "TAPI: ast_digit_end()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return 0;
 }
 
 static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 {
-	ast_debug(1, "TAPI: ast_lantiq_call()\n");
-
+	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
-	
+
 	struct lantiq_pvt *pvt = ast->tech_pvt;
-	
-	ast_debug(1, "TAPI: ast_lantiq_call() state: %s\n", state_string(pvt->channel_state));
+	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
-		ast_debug(1, "TAPI: ast_lantiq_call(): port %i ringing.\n", pvt->port_id);
+		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
 		lantiq_ring(pvt->port_id, 1);
 		pvt->channel_state = RINGING;
 
 		ast_setstate(ast, AST_STATE_RINGING);
 		ast_queue_control(ast, AST_CONTROL_RINGING);
 	} else {
-		ast_debug(1, "TAPI: ast_lantiq_call(): port %i busy.\n", pvt->port_id);
+		ast_log(LOG_DEBUG, "port %i is busy\n", pvt->port_id);
 		ast_setstate(ast, AST_STATE_BUSY);
 		ast_queue_control(ast, AST_CONTROL_BUSY);
 	}
@@ -440,31 +429,27 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 
 static int ast_lantiq_hangup(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: ast_lantiq_hangup()\n");
-
-	struct lantiq_pvt *pvt = ast->tech_pvt;
-
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
+
+	struct lantiq_pvt *pvt = ast->tech_pvt;
+	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 	
 	if (ast->_state == AST_STATE_RINGING) {
+		// FIXME
 		ast_debug(1, "TAPI: ast_lantiq_hangup(): ast->_state == AST_STATE_RINGING\n");
 	}
 
 	switch (pvt->channel_state) {
 		case RINGING:
 		case ONHOOK: 
-			{
-				lantiq_ring(pvt->port_id, 0);
-				pvt->channel_state = ONHOOK;
-				break;
-			}
+			lantiq_ring(pvt->port_id, 0);
+			pvt->channel_state = ONHOOK;
+			break;
 		default:
-			{
-				ast_debug(1, "TAPI: ast_lantiq_hangup(): we were hung up, play busy tone.\n");
-				pvt->channel_state = CALL_ENDED;
-				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
-			}
+			ast_log(LOG_DEBUG, "we were hung up, play busy tone\n");
+			pvt->channel_state = CALL_ENDED;
+			lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
 	}
 
 	ast_setstate(ast, AST_STATE_DOWN);
@@ -479,36 +464,34 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 static int ast_lantiq_answer(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: ast_lantiq_answer()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return 0;
 }
 
 static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: ast_lantiq_read()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return NULL;
 }
 
 static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 {
-	ast_debug(1, "TAPI: ast_lantiq_write()\n");
-
 	char buf[2048];
 	struct lantiq_pvt *pvt = ast->tech_pvt;
 	int ret = -1;
 	rtp_header_t *rtp_header = (rtp_header_t *) buf;
 
 	if(frame->frametype != AST_FRAME_VOICE) {
-		ast_debug(1, "TAPI: ast_lantiq_write(): unhandled frame type.\n");
+		ast_log(LOG_DEBUG, "unhandled frame type\n");
 		return 0;
 	}
 	
 	if (frame->datalen == 0) {
-		ast_debug(1, "TAPI: ast_lantiq_write(): We've been prodded.\n");
+		ast_log(LOG_DEBUG, "we've been prodded\n");
 		return 0;
 	}
 
-	memset(buf, '\0', sizeof(rtp_header_t));
+	memset(buf, 0, sizeof(rtp_header_t));
 	rtp_header->version      = 2;
 	rtp_header->padding      = 0;
 	rtp_header->extension    = 0;
@@ -549,7 +532,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 
 static struct ast_frame * ast_lantiq_exception(struct ast_channel *ast)
 {
-	ast_debug(1, "TAPI: ast_lantiq_exception()\n");
+	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return NULL;
 }
 
@@ -626,17 +609,14 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 
 static struct ast_channel * ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
 {
+	ast_mutex_lock(&iflock);
+
 	char buf[BUFSIZ];
-	
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
 
 	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
 
-	if (ast_mutex_lock(&iflock)) {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return NULL;
-	}
 
 	/* check for correct data argument */
 	if (ast_strlen_zero(data)) {
@@ -665,7 +645,8 @@ static struct ast_channel * ast_lantiq_requester(const char *type, format_t form
 	return chan;
 }
 
-static int lantiq_dev_data_handler(int c) {
+static int lantiq_dev_data_handler(int c)
+{
 	char buf[BUFSIZ];
 	struct ast_frame frame = {0};
 
@@ -736,12 +717,9 @@ static int accept_call(int c)
 
 static int lantiq_dev_event_hook(int c, int state)
 {
-	ast_log(LOG_ERROR, "TAPI: channel %i %s hook.\n", c, state ? "on" : "off");
+	ast_mutex_lock(&iflock);
 
-	if (ast_mutex_lock(&iflock)) {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return -1;
-	}
+	ast_log(LOG_DEBUG, "on port %i detected event %s hook\n", c, state ? "on" : "off");
 
 	int ret = -1;
 	if (state) {
@@ -806,18 +784,16 @@ static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
 
 static void lantiq_dial(struct lantiq_pvt *pvt)
 {
-	ast_debug(1, "TAPI: lantiq_dial()\n");
-
 	struct ast_channel *chan = NULL;
 
-	ast_debug(1, "TAPI: lantiq_dial(): user want's to dial %s.\n", pvt->dtmfbuf);
+	ast_log(LOG_DEBUG, "user want's to dial %s.\n", pvt->dtmfbuf);
 
 	if (ast_exists_extension(NULL, pvt->context, pvt->dtmfbuf, 1, NULL)) {
-		ast_debug(1, "TAPI: lantiq_dial(): Asterisk knows extension %s, dialing.\n", pvt->dtmfbuf);
+		ast_debug(1, "found extension %s, dialing\n", pvt->dtmfbuf);
 
 		strcpy(pvt->ext, pvt->dtmfbuf);
 
-		ast_verbose( VERBOSE_PREFIX_3 "  extension exists, starting PBX %s\n", pvt->ext);
+		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->ext);
 
 		chan = lantiq_channel(1, AST_STATE_UP, pvt->ext+1, pvt->context);
 		chan->tech_pvt = pvt;
@@ -828,13 +804,11 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		pvt->channel_state = INCALL;
 
 		if (ast_pbx_start(chan)) {
-			ast_log(LOG_WARNING, "  Unable to start PBX on %s\n", chan->name);
+			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
 			ast_hangup(chan);
 		}
-	}
-	else {
-		ast_debug(1, "TAPI: lantiq_dial(): no extension found.\n");
-
+	} else {
+		ast_log(LOG_DEBUG, "no extension found\n");
 		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
 		pvt->channel_state = CALL_ENDED;
 	}
@@ -858,14 +832,11 @@ static int lantiq_event_dial_timeout(const void* data)
 	return 0;
 }
 
-
 static void lantiq_dev_event_digit(int c, char digit)
 {
-	ast_debug(1, "TAPI: lantiq_event_digit() port=%i digit=%c\n", port, digit);
-	if (ast_mutex_lock(&iflock)) {
-		ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-		return;
-	}
+	ast_mutex_lock(&iflock);
+
+	ast_log(LOG_DEBUG, "on port %i detected digit \"%c\"\n", c, digit);
 
 	struct lantiq_pvt *pvt = &iflist[c];
 
@@ -891,17 +862,17 @@ static void lantiq_dev_event_digit(int c, char digit)
 
 				/* setup autodial timer */
 				if (!pvt->dial_timer) {
-					ast_debug(1, "TAPI: lantiq_dev_event_digit() setting new timer.\n");
+					ast_log(LOG_DEBUG, "setting new timer\n");
 					pvt->dial_timer = ast_sched_thread_add(sched_thread, 2000, lantiq_event_dial_timeout, (const void*) pvt);
 				} else {
-					ast_debug(1, "TAPI: lantiq_dev_event_digit() replacing timer.\n");
+					ast_log(LOG_DEBUG, "replacing timer\n");
 					struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
 					AST_SCHED_REPLACE(pvt->dial_timer, sched, 2000, lantiq_event_dial_timeout, (const void*) pvt);
 				}
 			}
 			break;
 		default:
-			ast_debug(1, "TAPI: lantiq_dev_event_digit() unhandled state.\n");
+			ast_log(LOG_ERROR, "don't know what to do in unhandled state\n");
 			break;
 	}
 
@@ -915,10 +886,7 @@ static void lantiq_dev_event_handler(void)
 	unsigned int i;
 
 	for (i = 0; i < dev_ctx.channels ; i++) {
-		if (ast_mutex_lock(&iflock)) {
-			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-			break;
-		}
+		ast_mutex_lock(&iflock);
 
 		memset (&event, 0, sizeof(event));
 		event.ch = i;
@@ -941,15 +909,12 @@ static void lantiq_dev_event_handler(void)
 				lantiq_dev_event_hook(i, 0);
 				break;
 			case IFX_TAPI_EVENT_DTMF_DIGIT:
-				ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED DTMF DIGIT: %c\n", i, (char)event.data.dtmf.ascii);
 				lantiq_dev_event_digit(i, (char)event.data.dtmf.ascii);
 				break;
 			case IFX_TAPI_EVENT_PULSE_DIGIT:
 				if (event.data.pulse.digit == 0xB) {
-					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0');
 					lantiq_dev_event_digit(i, '0');
 				} else {
-					ast_log(LOG_ERROR, "ON CHANNEL %d DETECTED PULSE DIGIT: %c\n", i, '0' + (char)event.data.pulse.digit);
 					lantiq_dev_event_digit(i, '0' + (char)event.data.pulse.digit);
 				}
 				break;
@@ -958,14 +923,13 @@ static void lantiq_dev_event_handler(void)
 			case IFX_TAPI_EVENT_CID_TX_SEQ_END:
 				break;
 			default:
-				ast_log(LOG_ERROR, "Unable TAPI event %08X\n", event.id);
+				ast_log(LOG_ERROR, "unknown TAPI event %08X\n", event.id);
 				break;
 		}
 	}
 }
 
-static void *
-lantiq_events_monitor(void *data)
+static void * lantiq_events_monitor(void *data)
 {
 	ast_verbose("TAPI thread started\n");
 
@@ -979,10 +943,7 @@ lantiq_events_monitor(void *data)
 	fds[2].events = POLLIN;
 
 	while (monitor) {
-		if (ast_mutex_lock(&monlock)) {
-			ast_log(LOG_WARNING, "Unable to lock the monitor\n");
-			break;
-		}
+		ast_mutex_lock(&monlock);
 
 		if (poll(fds, dev_ctx.channels + 1, 2000) <= 0) {
 			ast_mutex_unlock(&monlock);
@@ -996,12 +957,12 @@ lantiq_events_monitor(void *data)
 		ast_mutex_unlock(&monlock);
 
 		if ((fds[1].revents & POLLIN) && (lantiq_dev_data_handler(0))) {
-			ast_verbose("TAPI: data handler failed\n");
+			ast_log(LOG_ERROR, "data handler 0 failed\n");
 			break;
 		}
 
 		if ((fds[2].revents & POLLIN) && (lantiq_dev_data_handler(1))) {
-			ast_verbose("TAPI: data handler failed\n");
+			ast_log(LOG_ERROR, "data handler 1 failed\n");
 			break;
 		}
 	}
@@ -1014,15 +975,15 @@ static int restart_monitor(void)
 	/* If we're supposed to be stopped -- stay stopped */
 	if (monitor_thread == AST_PTHREADT_STOP)
 		return 0;
-	if (ast_mutex_lock(&monlock)) {
-		ast_log(LOG_WARNING, "Unable to lock monitor\n");
-		return -1;
-	}
+
+	ast_mutex_lock(&monlock);
+
 	if (monitor_thread == pthread_self()) {
 		ast_mutex_unlock(&monlock);
 		ast_log(LOG_WARNING, "Cannot kill myself\n");
 		return -1;
 	}
+
 	if (monitor_thread != AST_PTHREADT_NULL) {
 		if (ast_mutex_lock(&iflock)) {
 			ast_mutex_unlock(&monlock);
@@ -1035,6 +996,7 @@ static int restart_monitor(void)
 		pthread_join(monitor_thread, NULL);
 		ast_mutex_unlock(&iflock);
 	}
+
 	monitor = 1;
 	/* Start a new monitor */
 	if (ast_pthread_create_background(&monitor_thread, NULL, lantiq_events_monitor, NULL) < 0) {
@@ -1042,11 +1004,14 @@ static int restart_monitor(void)
 		ast_log(LOG_ERROR, "Unable to start monitor thread.\n");
 		return -1;
 	}
+
 	ast_mutex_unlock(&monlock);
+
 	return 0;
 }
 
-static void lantiq_cleanup(void) {
+static void lantiq_cleanup(void)
+{
 	int c;
 
 	for (c = 0; c < dev_ctx.channels ; c++) { 
