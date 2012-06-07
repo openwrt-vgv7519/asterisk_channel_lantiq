@@ -353,7 +353,7 @@ static const char *control_string(int c)
 
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen)
 {
-	ast_verb(3, "phone indication \"%s\".\n", control_string(condition));
+	ast_verb(3, "phone indication \"%s\"\n", control_string(condition));
 
 	struct lantiq_pvt *pvt = chan->tech_pvt;
 
@@ -558,7 +558,7 @@ static int lantiq_standby(int c)
 
 static int lantiq_end_dialing(int c)
 {
-	ast_debug(1, "%s\n", __FUNCTION__);
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	if (pvt->dial_timer) {
@@ -575,7 +575,7 @@ static int lantiq_end_dialing(int c)
 
 static int lantiq_end_call(int c)
 {
-	ast_debug(1, "%s\n", __FUNCTION__);
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
 
 	struct lantiq_pvt *pvt = &iflist[c];
 	
@@ -588,7 +588,7 @@ static int lantiq_end_call(int c)
 
 static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx)
 {
-	ast_debug(1, "lantiq_channel()\n");
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
 
 	struct ast_channel *chan = NULL;
 
@@ -651,7 +651,7 @@ static int lantiq_dev_data_handler(int c)
 	struct ast_frame frame = {0};
 
 	int res = read(dev_ctx.ch_fd[c], buf, sizeof(buf));
-	if (res <= 0) ast_debug(1, "%s: Read error: %i.\n", __FUNCTION__, res);
+	if (res <= 0) ast_log(LOG_ERROR, "we got read error %i\n", res);
 	
 	rtp_header_t *rtp = (rtp_header_t*) buf;
 
@@ -690,8 +690,8 @@ static int lantiq_dev_data_handler(int c)
 }
 
 static int accept_call(int c)
-{
-	ast_debug(1, "%s: line %i\n", __FUNCTION__, __LINE__);
+{ 
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
 
 	struct lantiq_pvt *pvt = &iflist[c];
 
@@ -700,15 +700,11 @@ static int accept_call(int c)
 
 		switch (chan->_state) {
 			case AST_STATE_RINGING:
-				{
-					ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
-					pvt->channel_state = INCALL;
-					break;
-				}
+				ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
+				pvt->channel_state = INCALL;
+				break;
 			default:
-				{
-					ast_debug(1, "%s: line %i: unhandled state %s.\n", __FUNCTION__, __LINE__, ast_state2str(chan->_state));
-				}
+				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(chan->_state));
 		}
 	}
 
@@ -1081,7 +1077,7 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->dtmfbuf[0] = '\0';
 		pvt->dtmfbuf_len = 0;
 	} else {
-		ast_log(LOG_ERROR, "%s line %i: cannot clear structure.\n", __FUNCTION__, __LINE__);
+		ast_log(LOG_ERROR, "unable to clear pvt structure\n");
 	}
 
 	return pvt;
@@ -1091,7 +1087,7 @@ static int lantiq_create_pvts(void)
 {
 	int i;
 
-	iflist = ast_calloc(1, sizeof(struct lantiq_pvt)*dev_ctx.channels);
+	iflist = ast_calloc(1, sizeof(struct lantiq_pvt) * dev_ctx.channels);
 
 	if (iflist) { 
 		for (i=0 ; i<dev_ctx.channels ; i++) {
@@ -1100,7 +1096,7 @@ static int lantiq_create_pvts(void)
 		}
 		return 0;
 	} else {
-		ast_log(LOG_ERROR, "%s line %i: cannot allocate memory.\n", __FUNCTION__, __LINE__);
+		ast_log(LOG_ERROR, "unable to allocate memory\n");
 		return -1;
 	}
 }
