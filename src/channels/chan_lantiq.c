@@ -81,11 +81,14 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define TAPI_TONE_LOCALE_DIAL_CODE              25
 #define TAPI_TONE_LOCALE_WAITING_CODE           37
 
+#define LANTIQ_CONTEXT_PREFIX "lantiq"
+
 static const char config[] = "lantiq.conf";
 
 static char firmware_filename[PATH_MAX] = "/lib/firmware/ifx_firmware.bin";
 static char bbd_filename[PATH_MAX] = "/lib/firmware/ifx_bbd_fxs.bin";
 static char base_path[PATH_MAX] = "/dev/vmmc";
+static int per_channel_context = 0;
 
 /*
  * The private structures of the Phone Jack channels are linked for selecting
@@ -105,7 +108,7 @@ static struct lantiq_pvt {
 	struct ast_channel *owner;         /* Channel we belong to, possibly NULL  */
 	int port_id;                       /* Port number of this object, 0..n     */
 	int channel_state;
-	char *context;                     /* this port's dialplan context         */
+	char context[AST_MAX_CONTEXT];     /* this port's dialplan context         */
 	char ext[AST_MAX_EXTENSION+1];     /* the extension this port is connecting*/
 	int dial_timer;                    /* timer handle for autodial timeout    */
 	char dtmfbuf[AST_MAX_EXTENSION+1]; /* buffer holding dialed digits         */
@@ -1071,7 +1074,7 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->owner = NULL;
 		pvt->port_id = -1;
 		pvt->channel_state = UNKNOWN;
-		pvt->context = strdup("default");
+		pvt->context[0] = '\0';
 		pvt->ext[0] = '\0';
 		pvt->dial_timer = 0;
 		pvt->dtmfbuf[0] = '\0';
@@ -1093,6 +1096,12 @@ static int lantiq_create_pvts(void)
 		for (i=0 ; i<dev_ctx.channels ; i++) {
 			lantiq_init_pvt(&iflist[i]);
 			iflist[i].port_id = i;
+			if (per_channel_context) {
+				snprintf(iflist[i].context, AST_MAX_CONTEXT, "%s%i", LANTIQ_CONTEXT_PREFIX, i+1);
+				ast_debug(1, "Context for channel %i: %s\n", i, iflist[i].context);
+			} else {
+				snprintf(iflist[i].context, AST_MAX_CONTEXT, "default");
+			}
 		}
 		return 0;
 	} else {
@@ -1189,6 +1198,16 @@ static int load_module(void)
 			ast_copy_string(bbd_filename, v->value, sizeof(bbd_filename));
 		} else if (!strcasecmp(v->name, "basepath")) {
 			ast_copy_string(base_path, v->value, sizeof(base_path));
+		} else if (!strcasecmp(v->name, "per_channel_context")) {
+			if (!strcasecmp(v->value, "on")) {
+				per_channel_context = 1;
+			} else if (!strcasecmp(v->value, "off")) {
+				per_channel_context = 0;
+			} else {
+				ast_log(LOG_ERROR, "Unknown per_channel_context value '%s'. Try 'on' or 'off'.\n", v->value);
+				ast_config_destroy(cfg);
+				return AST_MODULE_LOAD_DECLINE;
+			}
 		}
 	}
 
