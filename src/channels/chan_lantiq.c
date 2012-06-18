@@ -219,6 +219,11 @@ static void lantiq_ring(int c, int r)
 
 static int lantiq_play_tone(int c, int t)
 {
+	/* stop currently playing tone before starting new one */
+	if (t != TAPI_TONE_LOCALE_NONE) {
+		ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, TAPI_TONE_LOCALE_NONE);
+	}
+
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_LOCAL_PLAY, t)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_TONE_LOCAL_PLAY ioctl failed\n");
 		return -1;
