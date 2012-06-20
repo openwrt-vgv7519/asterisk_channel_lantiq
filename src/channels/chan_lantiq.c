@@ -836,6 +836,21 @@ static int lantiq_event_dial_timeout(const void* data)
 	return 0;
 }
 
+static int lantiq_send_digit(int c, char digit) 
+{
+	struct lantiq_pvt *pvt = &iflist[c];
+
+	struct ast_frame f = { .frametype = AST_FRAME_DTMF, .subclass.integer = digit };
+
+	if (pvt->owner) {
+		ast_log(LOG_DEBUG, "Port %i transmitting digit \"%c\"\n", c, digit);
+		return ast_queue_frame(pvt->owner, &f);
+	} else {
+		ast_debug(1, "Warning: lantiq_send_digit() without owner!\n");
+		return -1;
+	}
+}
+
 static void lantiq_dev_event_digit(int c, char digit)
 {
 	ast_mutex_lock(&iflock);
@@ -845,6 +860,11 @@ static void lantiq_dev_event_digit(int c, char digit)
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	switch (pvt->channel_state) {
+		case INCALL:
+			{
+				lantiq_send_digit(c, digit);
+				break;
+			}
 		case OFFHOOK:  
 			pvt->channel_state = DIALING;
 
