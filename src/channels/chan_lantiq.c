@@ -726,7 +726,7 @@ static int lantiq_dev_event_hook(int c, int state)
 	ast_log(LOG_DEBUG, "on port %i detected event %s hook\n", c, state ? "on" : "off");
 
 	int ret = -1;
-	if (state) {
+	if (state) { /* going onhook */
 		switch (iflist[c].channel_state) {
 			case OFFHOOK: 
 				ret = lantiq_standby(c);
@@ -744,7 +744,7 @@ static int lantiq_dev_event_hook(int c, int state)
 				break;
 		}
 		iflist[c].channel_state = ONHOOK;
-	} else {
+	} else { /* going offhook */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
 			goto out;
