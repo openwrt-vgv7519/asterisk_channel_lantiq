@@ -115,6 +115,8 @@ static struct lantiq_pvt {
 	int dtmfbuf_len;                   /* lenght of dtmfbuf                    */
 	int rtp_timestamp;                 /* timestamp for RTP packets            */
 	uint16_t rtp_seqno;                /* Sequence nr for RTP packets          */
+	uint32_t call_setup_start;         /* Start of dialling in ms              */
+	uint32_t call_setup_delay;         /* time between ^ and 1st ring in ms    */
 } *iflist = NULL;
 
 static struct lantiq_ctx {
@@ -192,6 +194,14 @@ typedef struct rtp_header
   uint32_t timestamp;
   uint32_t ssrc;
 } rtp_header_t;
+
+static uint32_t now(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+
+	uint64_t tmp = ts.tv_sec*1000 + (ts.tv_nsec/1000000);
+	return (uint32_t) tmp;
+}
 
 static int lantiq_dev_open(const char *dev_path, const int32_t ch_num)
 {
@@ -379,6 +389,7 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 			}
 		case AST_CONTROL_RINGING:
 			{
+				pvt->call_setup_delay = now() - pvt->call_setup_start;
 				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_RINGING_CODE);
 				return 0;
 			}
@@ -708,6 +719,7 @@ static int accept_call(int c)
 
 		switch (chan->_state) {
 			case AST_STATE_RINGING:
+				lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 				ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
 				pvt->channel_state = INCALL;
 				break;
@@ -806,6 +818,8 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		strcpy(chan->exten, pvt->ext);
 		ast_setstate(chan, AST_STATE_RING);
 		pvt->channel_state = INCALL;
+
+		pvt->call_setup_start = now();
 
 		if (ast_pbx_start(chan)) {
 			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
@@ -1104,6 +1118,8 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->dial_timer = 0;
 		pvt->dtmfbuf[0] = '\0';
 		pvt->dtmfbuf_len = 0;
+		pvt->call_setup_start = 0;
+		pvt->call_setup_delay = 0;
 	} else {
 		ast_log(LOG_ERROR, "unable to clear pvt structure\n");
 	}
