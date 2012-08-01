@@ -136,6 +136,7 @@ static struct ast_frame *ast_lantiq_exception(struct ast_channel *ast);
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
 static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
+static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 
 static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
@@ -151,7 +152,8 @@ static const struct ast_channel_tech lantiq_tech = {
 	.exception = ast_lantiq_exception,
 	.indicate = ast_lantiq_indicate,
 	.fixup = ast_lantiq_fixup,
-	.requester = ast_lantiq_requester
+	.requester = ast_lantiq_requester,
+	.func_channel_read = acf_channel_read
 };
 
 /* Protect the interface list (of lantiq_pvt's) */
@@ -548,6 +550,32 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 
 	return 0;
 }
+
+static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen)
+{
+	struct lantiq_pvt *pvt;
+	int res = 0;
+
+	if (!chan || chan->tech != &lantiq_tech) {
+		ast_log(LOG_ERROR, "This function requires a valid Lantiq TAPI channel\n");
+		return -1;
+	}
+
+	ast_mutex_lock(&iflock);
+
+	pvt = (struct lantiq_pvt*) chan->tech_pvt;
+
+	if (!strcasecmp(args, "csd")) {
+		snprintf(buf, buflen, "%lu", (unsigned long int) pvt->call_setup_delay);
+	} else {
+		res = -1;
+	}
+
+	ast_mutex_unlock(&iflock);
+
+	return res;
+}
+
 
 static struct ast_frame * ast_lantiq_exception(struct ast_channel *ast)
 {
