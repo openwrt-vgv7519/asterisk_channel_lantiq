@@ -459,7 +459,7 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 	if (pvt->channel_state == ONHOOK) {
 		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
 
-		char *cid = ast->caller.id.number.valid ? ast->caller.id.number.str : NULL;
+		char *cid = ast->connected.id.number.valid ? ast->connected.id.number.str : NULL;
 		ast_log(LOG_DEBUG, "port %i CID: %s\n", pvt->port_id, cid ? cid : "none");
 
 		lantiq_ring(pvt->port_id, 1, cid);
