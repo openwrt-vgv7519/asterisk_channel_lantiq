@@ -672,7 +672,7 @@ static int lantiq_standby(int c)
 
 static int lantiq_end_dialing(int c)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	if (pvt->dial_timer) {
@@ -689,7 +689,7 @@ static int lantiq_end_dialing(int c)
 
 static int lantiq_end_call(int c)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
 
 	struct lantiq_pvt *pvt = &iflist[c];
 	
@@ -703,7 +703,7 @@ static int lantiq_end_call(int c)
 
 static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
 
 	struct ast_channel *chan = NULL;
 
@@ -803,7 +803,7 @@ static int lantiq_dev_data_handler(int c)
 
 static int accept_call(int c)
 { 
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG");
+	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
 
 	struct lantiq_pvt *pvt = &iflist[c];
 
