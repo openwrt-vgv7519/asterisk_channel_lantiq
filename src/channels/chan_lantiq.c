@@ -220,12 +220,31 @@ static int lantiq_dev_open(const char *dev_path, const int32_t ch_num)
 	return open((const char*)dev_name, O_RDWR, 0644);
 }
 
-static void lantiq_ring(int c, int r)
+static void lantiq_ring(int c, int r, const char *cid)
 {
 	uint8_t status;
 
 	if (r) {
-		status = (uint8_t) ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_START, 0);
+		if (!cid) {
+			status = (uint8_t) ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_START, 0);
+		} else {
+			IFX_TAPI_CID_MSG_t msg;
+			IFX_TAPI_CID_MSG_STRING_t cid_el;
+
+			memset(&msg, 0, sizeof(msg));
+			memset(&cid_el, 0, sizeof(cid_el));
+			
+			cid_el.elementType = IFX_TAPI_CID_ST_CLI;
+			cid_el.len = strlen(cid);
+			strncpy((char*)cid_el.element, cid, (size_t)cid_el.len);
+
+			msg.txMode = IFX_TAPI_CID_HM_ONHOOK;
+			msg.messageType = IFX_TAPI_CID_MT_CSUP;
+			msg.message = (IFX_TAPI_CID_MSG_ELEMENT_t *)&cid_el;
+			msg.nMsgElements = 1;
+
+			status = (uint8_t) ioctl(dev_ctx.ch_fd[c], IFX_TAPI_CID_TX_SEQ_START, (IFX_int32_t) &msg);
+		}
 	} else {
 		status = (uint8_t) ioctl(dev_ctx.ch_fd[c], IFX_TAPI_RING_STOP, 0);
 	}
@@ -439,7 +458,11 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 
 	if (pvt->channel_state == ONHOOK) {
 		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
-		lantiq_ring(pvt->port_id, 1);
+
+		char *cid = ast->caller.id.number.valid ? ast->caller.id.number.str : NULL;
+		ast_log(LOG_DEBUG, "port %i CID: %s\n", pvt->port_id, cid ? cid : "none");
+
+		lantiq_ring(pvt->port_id, 1, cid);
 		pvt->channel_state = RINGING;
 
 		ast_setstate(ast, AST_STATE_RINGING);
@@ -449,7 +472,7 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 		ast_setstate(ast, AST_STATE_BUSY);
 		ast_queue_control(ast, AST_CONTROL_BUSY);
 	}
-		
+
 	ast_mutex_unlock(&iflock);
 
 	return 0;
@@ -471,7 +494,7 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 	switch (pvt->channel_state) {
 		case RINGING:
 		case ONHOOK: 
-			lantiq_ring(pvt->port_id, 0);
+			lantiq_ring(pvt->port_id, 0, NULL);
 			pvt->channel_state = ONHOOK;
 			break;
 		default:
@@ -1421,6 +1444,7 @@ static int load_module(void)
 				return AST_MODULE_LOAD_DECLINE;
 			}
 		} else if (!strcasecmp(v->name, "calleridtype")) {
+			ast_log(LOG_DEBUG, "Setting CID type to %s.\n", v->value);
 			if (!strcasecmp(v->value, "telecordia")) {
 				cid_type = IFX_TAPI_CID_STD_TELCORDIA;
 			} else if (!strcasecmp(v->value, "etsifsk")) {
