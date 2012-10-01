@@ -105,18 +105,24 @@ enum channel_state {
 };
 
 static struct lantiq_pvt {
-	struct ast_channel *owner;         /* Channel we belong to, possibly NULL  */
-	int port_id;                       /* Port number of this object, 0..n     */
+	struct ast_channel *owner;         /* Channel we belong to, possibly NULL   */
+	int port_id;                       /* Port number of this object, 0..n      */
 	int channel_state;
-	char context[AST_MAX_CONTEXT];     /* this port's dialplan context         */
-	char ext[AST_MAX_EXTENSION+1];     /* the extension this port is connecting*/
-	int dial_timer;                    /* timer handle for autodial timeout    */
-	char dtmfbuf[AST_MAX_EXTENSION+1]; /* buffer holding dialed digits         */
-	int dtmfbuf_len;                   /* lenght of dtmfbuf                    */
-	int rtp_timestamp;                 /* timestamp for RTP packets            */
-	uint16_t rtp_seqno;                /* Sequence nr for RTP packets          */
-	uint32_t call_setup_start;         /* Start of dialling in ms              */
-	uint32_t call_setup_delay;         /* time between ^ and 1st ring in ms    */
+	char context[AST_MAX_CONTEXT];     /* this port's dialplan context          */
+	char ext[AST_MAX_EXTENSION+1];     /* the extension this port is connecting */
+	int dial_timer;                    /* timer handle for autodial timeout     */
+	char dtmfbuf[AST_MAX_EXTENSION+1]; /* buffer holding dialed digits          */
+	int dtmfbuf_len;                   /* lenght of dtmfbuf                     */
+	int rtp_timestamp;                 /* timestamp for RTP packets             */
+	uint16_t rtp_seqno;                /* Sequence nr for RTP packets           */
+	uint32_t call_setup_start;         /* Start of dialling in ms               */
+	uint32_t call_setup_delay;         /* time between ^ and 1st ring in ms     */
+	uint16_t jb_size;                  /* Jitter buffer size                    */
+	uint32_t jb_underflow;             /* Jitter buffer injected samples        */
+	uint32_t jb_overflow;              /* Jitter buffer dropped samples         */
+	uint16_t jb_delay;                 /* Jitter buffer: playout delay          */
+	uint16_t jb_invalid;               /* Jitter buffer: Nr. of invalid packets */
+
 } *iflist = NULL;
 
 static struct lantiq_ctx {
@@ -137,6 +143,7 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
 static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
+static void lantiq_jb_get_stats(int c);
 
 static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
@@ -473,6 +480,8 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 			lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
 	}
 
+	lantiq_jb_get_stats(pvt->port_id);
+
 	ast_setstate(ast, AST_STATE_DOWN);
 	ast_module_unref(ast_module_info->self);
 	ast->tech_pvt = NULL;
@@ -567,6 +576,14 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 
 	if (!strcasecmp(args, "csd")) {
 		snprintf(buf, buflen, "%lu", (unsigned long int) pvt->call_setup_delay);
+	} else if (!strcasecmp(args, "jitter_stats")){
+		lantiq_jb_get_stats(pvt->port_id);
+		snprintf(buf, buflen, "jbBufSize=%u,jbUnderflow=%u,jbOverflow=%u,jbDelay=%u,jbInvalid=%u",
+				(uint32_t) pvt->jb_size,
+				(uint32_t) pvt->jb_underflow,
+				(uint32_t) pvt->jb_overflow,
+				(uint32_t) pvt->jb_delay,
+				(uint32_t) pvt->jb_invalid);
 	} else {
 		res = -1;
 	}
@@ -582,6 +599,33 @@ static struct ast_frame * ast_lantiq_exception(struct ast_channel *ast)
 	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return NULL;
 }
+
+static void lantiq_jb_get_stats(int c) {
+	struct lantiq_pvt *pvt = &iflist[c];
+
+	IFX_TAPI_JB_STATISTICS_t param;
+	memset (&param, 0, sizeof (param));
+	if (ioctl (dev_ctx.ch_fd[c], IFX_TAPI_JB_STATISTICS_GET, (IFX_int32_t) &param) != IFX_SUCCESS) {
+		ast_debug(1, "Error getting jitter buffer  stats.\n");
+	} else {
+		ast_debug(1, "Jitter buffer stats:  dev=%u, ch=%u, nType=%u, nBufSize=%u, nIsUnderflow=%u, nDsOverflow=%u, nPODelay=%u, nInvalid=%u", 
+				(uint32_t) param.dev,
+				(uint32_t) param.ch,
+				(uint32_t) param.nType,
+				(uint32_t) param.nBufSize,
+				(uint32_t) param.nIsUnderflow,
+				(uint32_t) param.nDsOverflow,
+				(uint32_t) param.nPODelay,
+				(uint32_t) param.nInvalid);
+		
+		pvt->jb_size = param.nBufSize;
+		pvt->jb_underflow = param.nIsUnderflow;
+		pvt->jb_overflow = param.nDsOverflow;
+		pvt->jb_invalid = param.nInvalid;
+		pvt->jb_delay = param.nPODelay;
+	}
+}
+
 
 static int lantiq_standby(int c)
 {
@@ -627,6 +671,7 @@ static int lantiq_end_call(int c)
 	struct lantiq_pvt *pvt = &iflist[c];
 	
 	if(pvt->owner) {
+		lantiq_jb_get_stats(c);
 		ast_queue_hangup(pvt->owner);
 	}
 
@@ -1148,6 +1193,11 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->dtmfbuf_len = 0;
 		pvt->call_setup_start = 0;
 		pvt->call_setup_delay = 0;
+		pvt->jb_size = 0;
+		pvt->jb_underflow = 0;
+		pvt->jb_overflow = 0;
+		pvt->jb_delay = 0;
+		pvt->jb_invalid = 0;
 	} else {
 		ast_log(LOG_ERROR, "unable to clear pvt structure\n");
 	}
