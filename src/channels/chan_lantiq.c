@@ -777,7 +777,6 @@ static int lantiq_dev_data_handler(int c)
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
 
-	ast_mutex_lock(&iflock);
 	struct lantiq_pvt *pvt = (struct lantiq_pvt *) &iflist[c];
 	if (pvt->owner && (pvt->owner->_state == AST_STATE_UP)) {
 		if(!ast_channel_trylock(pvt->owner)) {
@@ -785,8 +784,6 @@ static int lantiq_dev_data_handler(int c)
 			ast_channel_unlock(pvt->owner);
 		}
 	}
-
-	ast_mutex_unlock(&iflock);
 
 /*	ast_debug(1, "lantiq_dev_data_handler(): size: %i version: %i padding: %i extension: %i csrc_count: %i \n"
 				 "marker: %i payload_type: %s seqno: %i timestamp: %i ssrc: %i\n", 
