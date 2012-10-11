@@ -904,7 +904,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 
 		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->ext);
 
-		chan = lantiq_channel(AST_STATE_UP, 1, pvt->ext+1, pvt->context);
+		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context);
 		chan->tech_pvt = pvt;
 		pvt->owner = chan;
 
