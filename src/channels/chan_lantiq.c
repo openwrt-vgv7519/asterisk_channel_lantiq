@@ -658,6 +658,7 @@ static void lantiq_jb_get_stats(int c) {
 
 static int lantiq_standby(int c)
 {
+	ast_debug(1, "Stopping line feed for channel %i\n", c);
 	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 		ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
 		return -1;
@@ -847,22 +848,19 @@ static int lantiq_dev_event_hook(int c, int state)
 	int ret = -1;
 	if (state) { /* going onhook */
 		switch (iflist[c].channel_state) {
-			case OFFHOOK: 
-				ret = lantiq_standby(c);
-				break;
 			case DIALING: 
 				ret = lantiq_end_dialing(c);
 				break;
 			case INCALL: 
 				ret = lantiq_end_call(c);
 				break;
-			case CALL_ENDED:
-				ret = lantiq_standby(c); // TODO: are we sure for this ?
-				break;
-			default:
-				break;
 		}
+
 		iflist[c].channel_state = ONHOOK;
+
+		/* stop DSP data feed */
+		lantiq_standby(c);
+
 	} else { /* going offhook */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
