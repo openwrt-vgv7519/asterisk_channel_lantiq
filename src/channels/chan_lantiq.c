@@ -450,6 +450,8 @@ static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int durat
 
 static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 {
+	int res = 0;
+
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
@@ -469,13 +471,13 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 		ast_queue_control(ast, AST_CONTROL_RINGING);
 	} else {
 		ast_log(LOG_DEBUG, "port %i is busy\n", pvt->port_id);
-		ast_setstate(ast, AST_STATE_BUSY);
 		ast_queue_control(ast, AST_CONTROL_BUSY);
+		res = -1;
 	}
 
 	ast_mutex_unlock(&iflock);
 
-	return 0;
+	return res;
 }
 
 static int ast_lantiq_hangup(struct ast_channel *ast)
@@ -758,7 +760,15 @@ static struct ast_channel * ast_lantiq_requester(const char *type, format_t form
 	 */
 	port_id -= 1;
 
-	chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL);
+
+	/* Bail out if channel is already in use */
+	struct lantiq_pvt *pvt = &iflist[port_id];
+	if (! pvt->channel_state == ONHOOK) {
+		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
+		chan = NULL;
+	} else {
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL);
+	}
 
 	ast_mutex_unlock(&iflock);
 	return chan;
