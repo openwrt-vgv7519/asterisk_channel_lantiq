@@ -471,6 +471,7 @@ static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
 		ast_queue_control(ast, AST_CONTROL_RINGING);
 	} else {
 		ast_log(LOG_DEBUG, "port %i is busy\n", pvt->port_id);
+		ast_setstate(ast, AST_STATE_BUSY);
 		ast_queue_control(ast, AST_CONTROL_BUSY);
 		res = -1;
 	}
@@ -710,13 +711,14 @@ static int lantiq_end_call(int c)
 
 static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx)
 {
-	ast_log(LOG_DEBUG, "TODO - DEBUG MSG\n");
-
 	struct ast_channel *chan = NULL;
-
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%s", "1");
+	if (! chan) {
+		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
+		return NULL;
+	}
 
 	chan->tech = &lantiq_tech;
 	chan->nativeformats = AST_FORMAT_ULAW;
@@ -725,6 +727,8 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	chan->tech_pvt = pvt;
 
 	pvt->owner = chan;
+	
+	ast_debug(2, "Created channel: c=%i ext=%s\n", c, ext);
 
 	return chan;
 }
