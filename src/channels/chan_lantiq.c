@@ -728,8 +728,6 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 
 	pvt->owner = chan;
 	
-	ast_debug(2, "Created channel: c=%i ext=%s\n", c, ext);
-
 	return chan;
 }
 
