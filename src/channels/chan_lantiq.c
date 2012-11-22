@@ -727,7 +727,7 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	chan->tech_pvt = pvt;
 
 	pvt->owner = chan;
-	
+
 	return chan;
 }
 
