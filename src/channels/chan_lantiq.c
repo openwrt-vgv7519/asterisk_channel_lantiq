@@ -66,6 +66,7 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <asterisk/stringfields.h>
 #include <asterisk/musiconhold.h>
 #include <asterisk/sched.h>
+#include <asterisk/cli.h>
 
 /* Lantiq TAPI includes */
 #include <drv_tapi/drv_tapi_io.h>
@@ -1068,7 +1069,9 @@ static void lantiq_dev_event_handler(void)
 			case IFX_TAPI_EVENT_CID_TX_SEQ_END:
 				break;
 			default:
-				ast_log(LOG_ERROR, "unknown TAPI event %08X\n", event.id);
+				ast_log(LOG_ERROR, "Unknown TAPI event %08X. Restarting Asterisk...\n", event.id);
+				sleep(1);
+				ast_cli_command(-1, "core restart now");
 				break;
 		}
 	}
