@@ -149,7 +149,7 @@ static void lantiq_jb_get_stats(int c);
 static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
-	.capabilities = AST_FORMAT_G723_1 | AST_FORMAT_SLINEAR | AST_FORMAT_ULAW | AST_FORMAT_G729A,
+	.capabilities = AST_FORMAT_ULAW | AST_FORMAT_ALAW,
 	.send_digit_begin = ast_digit_begin,
 	.send_digit_end = ast_digit_end,
 	.call = ast_lantiq_call,
@@ -710,7 +710,7 @@ static int lantiq_end_call(int c)
 	return 0;
 }
 
-static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx)
+static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx, format_t format)
 {
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
@@ -721,10 +721,16 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 		return NULL;
 	}
 
+	char buf[BUFSIZ];
+	if (format != 0 && ! (format & lantiq_tech.capabilities)) {
+		ast_log(LOG_WARNING, "Requested channel with unsupported format %s. Forcing ALAW.\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+		format = AST_FORMAT_ALAW;
+	}
+
 	chan->tech = &lantiq_tech;
-	chan->nativeformats = AST_FORMAT_ULAW;
-	chan->readformat  = AST_FORMAT_ULAW;
-	chan->writeformat = AST_FORMAT_ULAW;
+	chan->nativeformats = lantiq_tech.capabilities;
+	chan->readformat  = format;
+	chan->writeformat = format;
 	chan->tech_pvt = pvt;
 
 	pvt->owner = chan;
@@ -771,7 +777,7 @@ static struct ast_channel * ast_lantiq_requester(const char *type, format_t form
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 		chan = NULL;
 	} else {
-		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL);
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, format);
 	}
 
 	ast_mutex_unlock(&iflock);
@@ -919,7 +925,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 
 		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->ext);
 
-		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context);
+		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context, 0);
 		chan->tech_pvt = pvt;
 		pvt->owner = chan;
 
