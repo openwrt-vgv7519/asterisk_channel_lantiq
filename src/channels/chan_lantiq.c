@@ -611,6 +611,16 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 				(uint32_t) pvt->jb_overflow,
 				(uint32_t) pvt->jb_delay,
 				(uint32_t) pvt->jb_invalid);
+	} else if (!strcasecmp(args, "jbBufSize")) {
+		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_size);
+	} else if (!strcasecmp(args, "jbUnderflow")) {
+		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_underflow);
+	} else if (!strcasecmp(args, "jbOverflow")) {
+		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_overflow);
+	} else if (!strcasecmp(args, "jbDelay")) {
+		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_delay);
+	} else if (!strcasecmp(args, "jbInvalid")) {
+		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_invalid);
 	} else {
 		res = -1;
 	}
