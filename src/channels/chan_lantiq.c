@@ -336,7 +336,7 @@ static int32_t lantiq_dev_firmware_download(int32_t fd, const char *path)
 	uint32_t size = 0;
 	VMMC_IO_INIT vmmc_io_init;
 
-	ast_log(LOG_DEBUG, "loading firmware: \"%s\".", path);
+	ast_log(LOG_DEBUG, "loading firmware: \"%s\".\n", path);
 
 	if (lantiq_dev_binary_buffer_create(path, &firmware, &size))
 		return -1;
