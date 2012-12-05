@@ -118,6 +118,8 @@ static struct lantiq_pvt {
 	uint16_t rtp_seqno;                /* Sequence nr for RTP packets           */
 	uint32_t call_setup_start;         /* Start of dialling in ms               */
 	uint32_t call_setup_delay;         /* time between ^ and 1st ring in ms     */
+	uint32_t call_start;               /* time we started dialling / answered   */
+	uint32_t call_answer;              /* time the callee answered our call     */
 	uint16_t jb_size;                  /* Jitter buffer size                    */
 	uint32_t jb_underflow;             /* Jitter buffer injected samples        */
 	uint32_t jb_overflow;              /* Jitter buffer dropped samples         */
@@ -211,6 +213,13 @@ static uint32_t now(void) {
 
 	uint64_t tmp = ts.tv_sec*1000 + (ts.tv_nsec/1000000);
 	return (uint32_t) tmp;
+}
+
+static uint32_t epoch(void) {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+
+	return tv.tv_sec;
 }
 
 static int lantiq_dev_open(const char *dev_path, const int32_t ch_num)
@@ -521,7 +530,9 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 static int ast_lantiq_answer(struct ast_channel *ast)
 {
-	ast_log(LOG_DEBUG, "entering... no code here...\n");
+	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
+	struct lantiq_pvt *pvt = ast->tech_pvt;
+	pvt->call_answer = epoch();
 	return 0;
 }
 
@@ -621,6 +632,12 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_delay);
 	} else if (!strcasecmp(args, "jbInvalid")) {
 		snprintf(buf, buflen, "%u", (uint32_t) pvt->jb_invalid);
+	} else if (!strcasecmp(args, "start")) {
+		struct tm *tm = gmtime((const time_t*)&pvt->call_start);
+		strftime(buf, buflen, "%F %T", tm);
+	} else if (!strcasecmp(args, "answer")) {
+		struct tm *tm = gmtime((const time_t*)&pvt->call_answer);
+		strftime(buf, buflen, "%F %T", tm);
 	} else {
 		res = -1;
 	}
@@ -849,6 +866,8 @@ static int accept_call(int c)
 				lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 				ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
 				pvt->channel_state = INCALL;
+				pvt->call_start = epoch();
+				pvt->call_answer = pvt->call_start;
 				break;
 			default:
 				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(chan->_state));
@@ -944,6 +963,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		pvt->channel_state = INCALL;
 
 		pvt->call_setup_start = now();
+		pvt->call_start = epoch();;
 
 		if (ast_pbx_start(chan)) {
 			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
@@ -1246,6 +1266,7 @@ static struct lantiq_pvt *lantiq_init_pvt(struct lantiq_pvt *pvt)
 		pvt->dtmfbuf_len = 0;
 		pvt->call_setup_start = 0;
 		pvt->call_setup_delay = 0;
+		pvt->call_answer = 0;
 		pvt->jb_size = 0;
 		pvt->jb_underflow = 0;
 		pvt->jb_overflow = 0;
