@@ -147,11 +147,14 @@ static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
 static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 static void lantiq_jb_get_stats(int c);
+static int lantiq_map_rtp_id(int formatid);
+static int lantiq_conf_enc(int c, int formatid);
 
 static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
-	.capabilities = AST_FORMAT_ULAW | AST_FORMAT_ALAW,
+	//.capabilities = AST_FORMAT_G729A | AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR | AST_FORMAT_SLINEAR16 | AST_FORMAT_G722 | AST_FORMAT_SIREN7,
+	.capabilities = AST_FORMAT_G729A | AST_FORMAT_ALAW | AST_FORMAT_ULAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR,
 	.send_digit_begin = ast_digit_begin,
 	.send_digit_end = ast_digit_end,
 	.call = ast_lantiq_call,
@@ -426,6 +429,7 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 				return 0;
 			}
 		case AST_CONTROL_RINGING:
+		case AST_CONTROL_PROGRESS:
 			{
 				pvt->call_setup_delay = now() - pvt->call_setup_start;
 				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_RINGING_CODE);
@@ -532,6 +536,9 @@ static int ast_lantiq_answer(struct ast_channel *ast)
 {
 	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+
+	lantiq_conf_enc(pvt->port_id, lantiq_map_rtp_id((int)ast->writeformat));
+
 	pvt->call_answer = epoch();
 	return 0;
 }
@@ -541,6 +548,55 @@ static struct ast_frame * ast_lantiq_read(struct ast_channel *ast)
 	ast_log(LOG_DEBUG, "entering... no code here...\n");
 	return NULL;
 }
+
+static int lantiq_map_rtp_id(int formatid)
+{
+	switch (formatid) {
+		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_63;
+		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_53;
+		case AST_FORMAT_G729A: return IFX_TAPI_COD_TYPE_G729;
+		case AST_FORMAT_ULAW: return IFX_TAPI_COD_TYPE_MLAW;
+		case AST_FORMAT_ALAW: return IFX_TAPI_COD_TYPE_ALAW;
+		case AST_FORMAT_G726: return IFX_TAPI_COD_TYPE_G726_32;
+		case AST_FORMAT_ILBC: return IFX_TAPI_COD_TYPE_ILBC_152;
+		case AST_FORMAT_SLINEAR: return IFX_TAPI_COD_TYPE_LIN16_8;
+		case AST_FORMAT_SLINEAR16: return IFX_TAPI_COD_TYPE_LIN16_16;
+		case AST_FORMAT_G722: return IFX_TAPI_COD_TYPE_G722_64;
+		case AST_FORMAT_SIREN7: return IFX_TAPI_COD_TYPE_G7221_32;
+		default:
+		{
+			ast_log(LOG_ERROR, "format received is %d, forcing alaw\n", formatid);
+			return IFX_TAPI_COD_TYPE_MLAW;
+		}
+	}
+}
+
+static int lantiq_conf_enc(int c, int formatid)
+{
+	/* Configure encoder before starting rtp session */
+	ast_log(LOG_DEBUG, "Configuring encoder to use tapi codec type %d on channel %i\n", formatid, c);
+
+	IFX_TAPI_ENC_CFG_t enc_cfg;
+
+	memset(&enc_cfg, 0x0, sizeof(IFX_TAPI_ENC_CFG_t));
+	enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
+	enc_cfg.nEncType = formatid;
+
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
+	}
+
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
+	}
+
+	if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
+		ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
+	}
+
+	return 0;
+}
+
 
 static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 {
@@ -747,20 +803,23 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
 		return NULL;
 	}
-
+/*
 	char buf[BUFSIZ];
 	if (format != 0 && ! (format & lantiq_tech.capabilities)) {
 		ast_log(LOG_WARNING, "Requested channel with unsupported format %s. Forcing ALAW.\n", ast_getformatname_multiple(buf, sizeof(buf), format));
 		format = AST_FORMAT_ALAW;
+	} else {
+		format = lantiq_tech.capabilities;
 	}
-
+*/
 	chan->tech = &lantiq_tech;
 	chan->nativeformats = lantiq_tech.capabilities;
-	chan->readformat  = format;
-	chan->writeformat = format;
 	chan->tech_pvt = pvt;
 
 	pvt->owner = chan;
+
+	if (format != 0)
+		lantiq_conf_enc(c, lantiq_map_rtp_id((int)format));
 
 	return chan;
 }
@@ -902,16 +961,6 @@ static int lantiq_dev_event_hook(int c, int state)
 	} else { /* going offhook */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_ACTIVE)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET ioctl failed\n");
-			goto out;
-		}
-
-		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_START, 0)) {
-			ast_log(LOG_ERROR, "IFX_TAPI_ENC_START ioctl failed\n");
-			goto out;
-		}
-
-		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_DEC_START, 0)) {
-			ast_log(LOG_ERROR, "IFX_TAPI_DEC_START ioctl failed\n");
 			goto out;
 		}
 
@@ -1310,19 +1359,29 @@ static int lantiq_setup_rtp(int c)
 
 	memset((char*)&rtpPTConf, '\0', sizeof(rtpPTConf));
 
-	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
-	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_53] = 4;
-//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
-//	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G7221_32] = AST_FORMAT_SIREN7;
 
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
+//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_53] = 4;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
-//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
-//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_53] = AST_FORMAT_G723_1;
-//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
-//	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G7221_32] = AST_FORMAT_SIREN7;
 
 	int ret;
 	if ((ret = ioctl(dev_ctx.ch_fd[c], IFX_TAPI_PKT_RTP_PT_CFG_SET, (IFX_int32_t) &rtpPTConf))) {
@@ -1550,7 +1609,6 @@ static int load_module(void)
 #endif
 	IFX_TAPI_DEV_START_CFG_t dev_start;
 	IFX_TAPI_MAP_DATA_t map_data;
-	IFX_TAPI_ENC_CFG_t enc_cfg;
 	IFX_TAPI_LINE_VOLUME_t line_vol;
 	IFX_TAPI_WLEC_CFG_t wlec_cfg;
 	IFX_TAPI_JB_CFG_t jb_cfg;
@@ -1640,16 +1698,6 @@ static int load_module(void)
 		/* set line feed */
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_LINE_FEED_SET, IFX_TAPI_LINE_FEED_STANDBY)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_LINE_FEED_SET %d failed\n", c);
-			return AST_MODULE_LOAD_FAILURE;
-		}
-
-		/* Configure encoder */
-		memset(&enc_cfg, 0x0, sizeof(IFX_TAPI_ENC_CFG_t));
-		enc_cfg.nFrameLen = IFX_TAPI_COD_LENGTH_20;
-		enc_cfg.nEncType = IFX_TAPI_COD_TYPE_MLAW;
-
-		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_ENC_CFG_SET, &enc_cfg)) {
-			ast_log(LOG_ERROR, "IFX_TAPI_ENC_CFG_SET %d failed\n", c);
 			return AST_MODULE_LOAD_FAILURE;
 		}
 
