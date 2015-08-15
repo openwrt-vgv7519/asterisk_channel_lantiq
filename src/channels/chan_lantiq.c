@@ -936,11 +936,20 @@ static int accept_call(int c)
 	return 0;
 }
 
+static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
+{
+	pvt->dtmfbuf[0] = '\0';
+	pvt->dtmfbuf_len = 0;
+	pvt->ext[0] = '\0';
+}
+
 static int lantiq_dev_event_hook(int c, int state)
 {
 	ast_mutex_lock(&iflock);
 
 	ast_log(LOG_DEBUG, "on port %i detected event %s hook\n", c, state ? "on" : "off");
+
+	struct lantiq_pvt *pvt = &iflist[c];
 
 	int ret = -1;
 	if (state) { /* going onhook */
@@ -971,6 +980,7 @@ static int lantiq_dev_event_hook(int c, int state)
 			default:
 				iflist[c].channel_state = OFFHOOK;
 				lantiq_play_tone(c, TAPI_TONE_LOCALE_DIAL_CODE);
+				lantiq_reset_dtmfbuf(pvt);
 				ret = 0;
 				break;
 		}
@@ -981,13 +991,6 @@ out:
 	ast_mutex_unlock(&iflock);
 
 	return ret;
-}
-
-static void lantiq_reset_dtmfbuf(struct lantiq_pvt *pvt)
-{
-	pvt->dtmfbuf[0] = '\0';
-	pvt->dtmfbuf_len = 0;
-	pvt->ext[0] = '\0';
 }
 
 static void lantiq_dial(struct lantiq_pvt *pvt)
