@@ -75,12 +75,19 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #define RTP_HEADER_LEN 12
 
 #define TAPI_AUDIO_PORT_NUM_MAX                 2
-#define TAPI_TONE_LOCALE_NONE                   0 
-#define TAPI_TONE_LOCALE_RINGING_CODE           26
-#define TAPI_TONE_LOCALE_BUSY_CODE              27
-#define TAPI_TONE_LOCALE_CONGESTION_CODE        27
-#define TAPI_TONE_LOCALE_DIAL_CODE              25
-#define TAPI_TONE_LOCALE_WAITING_CODE           37
+
+/* Tapi predefined tones 0 to 31 */
+#define TAPI_TONE_LOCALE_NONE			0
+//#define TAPI_TONE_LOCALE_DIAL_CODE		25
+//#define TAPI_TONE_LOCALE_RINGING_CODE		26
+//#define TAPI_TONE_LOCALE_BUSY_CODE		27
+//#define TAPI_TONE_LOCALE_CONGESTION_CODE	27
+
+/* Tapi custom tones 32 to 256 */
+#define TAPI_TONE_LOCALE_DIAL_CODE		32
+#define TAPI_TONE_LOCALE_RINGING_CODE		33
+#define TAPI_TONE_LOCALE_BUSY_CODE		34
+#define TAPI_TONE_LOCALE_CONGESTION_CODE	35
 
 #define LANTIQ_CONTEXT_PREFIX "lantiq"
 
@@ -423,6 +430,10 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 				return 0;
 			}
 		case AST_CONTROL_CONGESTION:
+			{
+				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
+				return 0;
+			}
 		case AST_CONTROL_BUSY:
 			{
 				lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
@@ -1023,7 +1034,7 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		}
 	} else {
 		ast_log(LOG_DEBUG, "no extension found\n");
-		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_BUSY_CODE);
+		lantiq_play_tone(pvt->port_id, TAPI_TONE_LOCALE_CONGESTION_CODE);
 		pvt->channel_state = CALL_ENDED;
 	}
 	
@@ -1607,9 +1618,7 @@ static int load_module(void)
 	ast_config_destroy(cfg);
 	
 	/* tapi */
-#ifdef TODO_TONES
 	IFX_TAPI_TONE_t tone;
-#endif
 	IFX_TAPI_DEV_START_CFG_t dev_start;
 	IFX_TAPI_MAP_DATA_t map_data;
 	IFX_TAPI_LINE_VOLUME_t line_vol;
@@ -1656,13 +1665,74 @@ static int load_module(void)
 
 	for (c = 0; c < dev_ctx.channels ; c++) {
 		/* tones */
-#ifdef TODO_TONES
 		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
+		tone.simple.index = TAPI_TONE_LOCALE_DIAL_CODE;
+		tone.simple.freqA = 425;
+		tone.simple.levelA = -150;
+		tone.simple.cadence[0] = 200;
+		tone.simple.cadence[1] = 300;
+		tone.simple.cadence[2] = 700;
+		tone.simple.cadence[3] = 800;
+		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
+		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
+		tone.simple.frequencies[2] = IFX_TAPI_TONE_FREQA;
+		tone.simple.frequencies[3] = IFX_TAPI_TONE_FREQNONE;
+		tone.simple.loop = 0;
+		tone.simple.pause = 0;
 		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
 			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
 			return AST_MODULE_LOAD_FAILURE;
 		}
-#endif
+
+		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
+		tone.simple.index = TAPI_TONE_LOCALE_RINGING_CODE;
+		tone.simple.freqA = 425;
+		tone.simple.levelA = -150;
+		tone.simple.cadence[0] = 1000;
+		tone.simple.cadence[1] = 4000;
+		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
+		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
+		tone.simple.loop = 0;
+		tone.simple.pause = 0;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
+		tone.simple.index = TAPI_TONE_LOCALE_BUSY_CODE;
+		tone.simple.freqA = 425;
+		tone.simple.levelA = -150;
+		tone.simple.cadence[0] = 500;
+		tone.simple.cadence[1] = 500;
+		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
+		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
+		tone.simple.loop = 0;
+		tone.simple.pause = 0;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
+		memset(&tone, 0, sizeof(IFX_TAPI_TONE_t));
+		tone.simple.format = IFX_TAPI_TONE_TYPE_SIMPLE;
+		tone.simple.index = TAPI_TONE_LOCALE_CONGESTION_CODE;
+		tone.simple.freqA = 425;
+		tone.simple.levelA = -150;
+		tone.simple.cadence[0] = 250;
+		tone.simple.cadence[1] = 250;
+		tone.simple.frequencies[0] = IFX_TAPI_TONE_FREQA;
+		tone.simple.frequencies[1] = IFX_TAPI_TONE_FREQNONE;
+		tone.simple.loop = 0;
+		tone.simple.pause = 0;
+		if (ioctl(dev_ctx.ch_fd[c], IFX_TAPI_TONE_TABLE_CFG_SET, &tone)) {
+			ast_log(LOG_ERROR, "IFX_TAPI_TONE_TABLE_CFG_SET %d failed\n", c);
+			return AST_MODULE_LOAD_FAILURE;
+		}
+
 		/* ringing type */
 		IFX_TAPI_RING_CFG_t ringingType;
 		memset(&ringingType, 0, sizeof(IFX_TAPI_RING_CFG_t));
