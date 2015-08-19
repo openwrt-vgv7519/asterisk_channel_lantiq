@@ -809,7 +809,7 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
 
-	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%s", "1");
+	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%d", (c + 1));
 	if (! chan) {
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
 		return NULL;
