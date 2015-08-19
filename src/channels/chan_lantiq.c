@@ -1093,27 +1093,18 @@ static void lantiq_dev_event_digit(int c, char digit)
 
 			/* fall through */
 		case DIALING: 
-			if (digit == '#') {
-				if (pvt->dial_timer) {
-					ast_sched_thread_del(sched_thread, pvt->dial_timer);
-					pvt->dial_timer = 0;
-				}
+			pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
+			pvt->dtmfbuf_len++;
+			pvt->dtmfbuf[pvt->dtmfbuf_len] = '\0';
 
-				lantiq_dial(pvt);
+			/* setup autodial timer */
+			if (!pvt->dial_timer) {
+				ast_log(LOG_DEBUG, "setting new timer\n");
+				pvt->dial_timer = ast_sched_thread_add(sched_thread, 4000, lantiq_event_dial_timeout, (const void*) pvt);
 			} else {
-				pvt->dtmfbuf[pvt->dtmfbuf_len] = digit;
-				pvt->dtmfbuf_len++;
-				pvt->dtmfbuf[pvt->dtmfbuf_len] = '\0';
-
-				/* setup autodial timer */
-				if (!pvt->dial_timer) {
-					ast_log(LOG_DEBUG, "setting new timer\n");
-					pvt->dial_timer = ast_sched_thread_add(sched_thread, 4000, lantiq_event_dial_timeout, (const void*) pvt);
-				} else {
-					ast_log(LOG_DEBUG, "replacing timer\n");
-					struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
-					AST_SCHED_REPLACE(pvt->dial_timer, sched, 4000, lantiq_event_dial_timeout, (const void*) pvt);
-				}
+				ast_log(LOG_DEBUG, "replacing timer\n");
+				struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
+				AST_SCHED_REPLACE(pvt->dial_timer, sched, 4000, lantiq_event_dial_timeout, (const void*) pvt);
 			}
 			break;
 		default:
