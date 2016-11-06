@@ -68,6 +68,11 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 #include <asterisk/sched.h>
 #include <asterisk/cli.h>
 
+#if (AST_VERSION >= 110)
+#include <sys/stat.h>
+#include "asterisk/format_compatibility.h"
+#endif
+
 /* Lantiq TAPI includes */
 #include <drv_tapi/drv_tapi_io.h>
 #include <drv_vmmc/vmmc_io.h>
@@ -91,12 +96,20 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 #define LANTIQ_CONTEXT_PREFIX "lantiq"
 
+#define AST_MODULE "TAPI"
+
 static const char config[] = "lantiq.conf";
 
 static char firmware_filename[PATH_MAX] = "/lib/firmware/ifx_firmware.bin";
 static char bbd_filename[PATH_MAX] = "/lib/firmware/ifx_bbd_fxs.bin";
 static char base_path[PATH_MAX] = "/dev/vmmc";
 static int per_channel_context = 0;
+
+#if (AST_VERSION < 110)
+typedef format_t lantiq_ast_format_cap;
+#else /* (AST_VERSION >= 110) */
+typedef struct ast_format_cap lantiq_ast_format_cap;
+#endif /* (AST_VERSION >= 110) */
 
 /*
  * The private structures of the Phone Jack channels are linked for selecting
@@ -143,7 +156,13 @@ static struct lantiq_ctx {
 
 static int ast_digit_begin(struct ast_channel *ast, char digit);
 static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int duration);
-static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout);
+static int ast_lantiq_call(struct ast_channel *ast,
+#if (AST_VERSION < 110)
+   char *dest,
+#else /* (AST_VERSION >= 110) */
+   const char *dest,
+#endif /* (AST_VERSION >= 110)*/
+   int timeout);
 static int ast_lantiq_hangup(struct ast_channel *ast);
 static int ast_lantiq_answer(struct ast_channel *ast);
 static struct ast_frame *ast_lantiq_read(struct ast_channel *ast);
@@ -151,7 +170,22 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame);
 static struct ast_frame *ast_lantiq_exception(struct ast_channel *ast);
 static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const void *data, size_t datalen);
 static int ast_lantiq_fixup(struct ast_channel *old, struct ast_channel *new);
-static struct ast_channel *ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause);
+static struct ast_channel *ast_lantiq_requester(const char *type,
+#if (AST_VERSION < 110)
+   format_t format,
+#else /* (AST_VERSION >= 110) */
+   lantiq_ast_format_cap *format,
+#endif /* (AST_VERSION >= 110)*/
+#if (AST_VERSION > 110)
+   const struct ast_assigned_ids *assigned_ids,
+#endif /* (AST_VERSION > 110) */
+   const struct ast_channel *requestor,
+#if (AST_VERSION < 110)
+   void *data,
+#else /* (AST_VERSION >= 110) */
+   const char *data,
+#endif /* (AST_VERSION >= 110)*/
+   int *cause);
 static int acf_channel_read(struct ast_channel *chan, const char *funcname, char *args, char *buf, size_t buflen);
 static void lantiq_jb_get_stats(int c);
 static int lantiq_map_rtp_id(int formatid);
@@ -161,7 +195,11 @@ static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
 	//.capabilities = AST_FORMAT_G729A | AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR | AST_FORMAT_SLINEAR16 | AST_FORMAT_G722 | AST_FORMAT_SIREN7,
+#if (AST_VERSION < 110)
 	.capabilities = AST_FORMAT_G729A | AST_FORMAT_ALAW | AST_FORMAT_ULAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR,
+#else
+	.capabilities = AST_FORMAT_G729 | AST_FORMAT_ALAW | AST_FORMAT_ULAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLIN,
+#endif
 	.send_digit_begin = ast_digit_begin,
 	.send_digit_end = ast_digit_end,
 	.call = ast_lantiq_call,
@@ -189,7 +227,12 @@ AST_MUTEX_DEFINE_STATIC(monlock);
 static unsigned int monitor;
 
 /* The scheduling thread */
+#if (AST_VERSION < 110)
 struct ast_sched_thread *sched_thread;
+#else
+static struct ast_sched_context *sched_thread;
+#endif
+
    
 /*
  * This is the thread for the monitor which checks for input on the channels
@@ -421,7 +464,11 @@ static int ast_lantiq_indicate(struct ast_channel *chan, int condition, const vo
 {
 	ast_verb(3, "phone indication \"%s\"\n", control_string(condition));
 
+#if (AST_VERSION < 110)
 	struct lantiq_pvt *pvt = chan->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(chan);
+#endif /* (AST_VERSION >= 110) */
 
 	switch (condition) {
 		case -1:
@@ -473,20 +520,35 @@ static int ast_digit_end(struct ast_channel *ast, char digit, unsigned int durat
 	return 0;
 }
 
-static int ast_lantiq_call(struct ast_channel *ast, char *dest, int timeout)
+static int ast_lantiq_call(struct ast_channel *ast, 
+#if (AST_VERSION < 110)
+   char *dest,
+#else /* (AST_VERSION >= 110) */
+   const char *dest,
+#endif /* (AST_VERSION >= 110)*/
+   int timeout)
 {
 	int res = 0;
 
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
+#if (AST_VERSION < 110)
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
+#endif /* (AST_VERSION >= 110) */
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 
 	if (pvt->channel_state == ONHOOK) {
 		ast_log(LOG_DEBUG, "port %i is ringing\n", pvt->port_id);
 
+#if (AST_VERSION < 110)
 		char *cid = ast->connected.id.number.valid ? ast->connected.id.number.str : NULL;
+#else /* (AST_VERSION >= 110) */
+		char *cid = ast_channel_connected(ast)->id.number.valid ? ast_channel_connected(ast)->id.number.str : NULL;
+#endif /* (AST_VERSION >= 110) */
+
 		ast_log(LOG_DEBUG, "port %i CID: %s\n", pvt->port_id, cid ? cid : "none");
 
 		lantiq_ring(pvt->port_id, 1, cid);
@@ -511,10 +573,18 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 	/* lock to prevent simultaneous access with do_monitor thread processing */
 	ast_mutex_lock(&iflock);
 
+#if (AST_VERSION < 110)
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
+#endif /* (AST_VERSION >= 110) */
 	ast_log(LOG_DEBUG, "state: %s\n", state_string(pvt->channel_state));
 	
+#if (AST_VERSION < 110)
 	if (ast->_state == AST_STATE_RINGING) {
+#else /* (AST_VERSION >= 110) */
+	if (ast_channel_state(ast) == AST_STATE_RINGING) {
+#endif /* (AST_VERSION >= 110) */
 		// FIXME
 		ast_debug(1, "TAPI: ast_lantiq_hangup(): ast->_state == AST_STATE_RINGING\n");
 	}
@@ -535,7 +605,11 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 
 	ast_setstate(ast, AST_STATE_DOWN);
 	ast_module_unref(ast_module_info->self);
-	ast->tech_pvt = NULL;
+#if (AST_VERSION < 110)
+	ast>tech_pvt = NULL;
+#else /* (AST_VERSION >= 110) */
+	ast_channel_tech_pvt_set(ast, NULL);
+#endif /* (AST_VERSION >= 110) */
 	pvt->owner = NULL;
 
 	ast_mutex_unlock(&iflock);
@@ -546,9 +620,21 @@ static int ast_lantiq_hangup(struct ast_channel *ast)
 static int ast_lantiq_answer(struct ast_channel *ast)
 {
 	ast_log(LOG_DEBUG, "Remote end has answered call.\n");
+#if (AST_VERSION < 110)
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
+#endif /* (AST_VERSION >= 110) */
 
+#if (AST_VERSION < 110)
 	lantiq_conf_enc(pvt->port_id, lantiq_map_rtp_id((int)ast->writeformat));
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+//   ast_format_copy(ast_channel_writeformat(chan), format);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+	lantiq_conf_enc(pvt->port_id, lantiq_map_rtp_id((int)ast_channel_writeformat(ast)));
+#endif /* (AST_VERSION > 110) */
 
 	pvt->call_answer = epoch();
 	return 0;
@@ -565,13 +651,22 @@ static int lantiq_map_rtp_id(int formatid)
 	switch (formatid) {
 		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_63;
 		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_53;
+#if (AST_VERSION < 110)
 		case AST_FORMAT_G729A: return IFX_TAPI_COD_TYPE_G729;
+#else
+		case AST_FORMAT_G729: return IFX_TAPI_COD_TYPE_G729;
+#endif
 		case AST_FORMAT_ULAW: return IFX_TAPI_COD_TYPE_MLAW;
 		case AST_FORMAT_ALAW: return IFX_TAPI_COD_TYPE_ALAW;
 		case AST_FORMAT_G726: return IFX_TAPI_COD_TYPE_G726_32;
 		case AST_FORMAT_ILBC: return IFX_TAPI_COD_TYPE_ILBC_152;
+#if (AST_VERSION < 110)
 		case AST_FORMAT_SLINEAR: return IFX_TAPI_COD_TYPE_LIN16_8;
 		case AST_FORMAT_SLINEAR16: return IFX_TAPI_COD_TYPE_LIN16_16;
+#else
+		case AST_FORMAT_SLIN: return IFX_TAPI_COD_TYPE_LIN16_8;
+		case AST_FORMAT_SLIN16: return IFX_TAPI_COD_TYPE_LIN16_16;
+#endif
 		case AST_FORMAT_G722: return IFX_TAPI_COD_TYPE_G722_64;
 		case AST_FORMAT_SIREN7: return IFX_TAPI_COD_TYPE_G7221_32;
 		default:
@@ -612,7 +707,11 @@ static int lantiq_conf_enc(int c, int formatid)
 static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 {
 	char buf[2048];
+#if (AST_VERSION < 110)
 	struct lantiq_pvt *pvt = ast->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	struct lantiq_pvt *pvt = ast_channel_tech_pvt(ast);
+#endif /* (AST_VERSION >= 110) */
 	int ret = -1;
 	rtp_header_t *rtp_header = (rtp_header_t *) buf;
 
@@ -635,7 +734,17 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->timestamp    = pvt->rtp_timestamp;
 	rtp_header->seqno        = pvt->rtp_seqno++;
 	rtp_header->ssrc         = 0;
+#if (AST_VERSION < 110)
 	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
+//   return (&(frame->subclass.codec));
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+	rtp_header->payload_type = (uint8_t) frame->subclass.format;
+//   return (&(frame->subclass.format));
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+//   return (frame->subclass.format);
+#endif /* (AST_VERSION > 110) */
 
 	pvt->rtp_timestamp += 160;
 
@@ -670,14 +779,23 @@ static int acf_channel_read(struct ast_channel *chan, const char *funcname, char
 	struct lantiq_pvt *pvt;
 	int res = 0;
 
+#if (AST_VERSION < 110)
 	if (!chan || chan->tech != &lantiq_tech) {
+#else /* (AST_VERSION >= 110) */
+	if (!chan || ast_channel_tech(chan) != &lantiq_tech) {
+#endif /* (AST_VERSION >= 110) */
 		ast_log(LOG_ERROR, "This function requires a valid Lantiq TAPI channel\n");
 		return -1;
 	}
 
 	ast_mutex_lock(&iflock);
 
+#if (AST_VERSION < 110)
 	pvt = (struct lantiq_pvt*) chan->tech_pvt;
+	struct lantiq_pvt *pvt = chan->tech_pvt;
+#else /* (AST_VERSION >= 110) */
+	pvt = ast_channel_tech_pvt(chan);
+#endif /* (AST_VERSION >= 110) */
 
 	if (!strcasecmp(args, "csd")) {
 		snprintf(buf, buflen, "%lu", (unsigned long int) pvt->call_setup_delay);
@@ -779,7 +897,11 @@ static int lantiq_end_dialing(int c)
 	struct lantiq_pvt *pvt = &iflist[c];
 
 	if (pvt->dial_timer) {
+#if (AST_VERSION < 110)
 		ast_sched_thread_del(sched_thread, pvt->dial_timer);
+#else /* (AST_VERSION >= 110) */
+        AST_SCHED_DEL(sched_thread, pvt->dial_timer);
+#endif /* (AST_VERSION >= 110) */
 		pvt->dial_timer = 0;
 	}
 
@@ -804,12 +926,29 @@ static int lantiq_end_call(int c)
 	return 0;
 }
 
-static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx, format_t format)
+static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx,
+#if (AST_VERSION <= 110)
+    const char *linkedid,
+#else /* (AST_VERSION > 110) */
+    const struct ast_assigned_ids *assigned_ids,
+    const struct ast_channel *requestor,
+#endif /* (AST_VERSION > 110) */
+#if (AST_VERSION < 110)
+    format_t format)
+#else /* (AST_VERSION >= 110) */
+    lantiq_ast_format_cap *format)
+#endif /* (AST_VERSION >= 110)*/
 {
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
 
-	chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx, 0, c, "TAPI/%d", (c + 1));
+    chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx,
+#if (AST_VERSION <= 110)
+      linkedid, c,
+#else /* (AST_VERSION > 110) */
+      assigned_ids, requestor, AST_AMA_NONE,
+#endif /* (AST_VERSION > 110) */
+      "TAPI/%d", (c + 1));
 	if (! chan) {
 		ast_log(LOG_DEBUG, "Cannot allocate channel!\n");
 		return NULL;
@@ -823,9 +962,24 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 		format = lantiq_tech.capabilities;
 	}
 */
+#if (AST_VERSION < 110)
 	chan->tech = &lantiq_tech;
+#else /* (AST_VERSION >= 110) */
+    ast_channel_tech_set(chan, &lantiq_tech);
+#endif /* (AST_VERSION >= 110) */
+#if (AST_VERSION < 110)
 	chan->nativeformats = lantiq_tech.capabilities;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+    ast_channel_nativeformats_set(chan, lantiq_tech.capabilities);
+#endif /* (AST_VERSION > 110) */
+#if (AST_VERSION < 110)
 	chan->tech_pvt = pvt;
+#else /* (AST_VERSION >= 110) */
+	ast_channel_tech_pvt_set(chan, pvt);
+#endif /* (AST_VERSION >= 110) */
 
 	pvt->owner = chan;
 
@@ -835,15 +989,36 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	return chan;
 }
 
-static struct ast_channel * ast_lantiq_requester(const char *type, format_t format, const struct ast_channel *requestor, void *data, int *cause)
+static struct ast_channel * ast_lantiq_requester(const char *type,
+#if (AST_VERSION < 110)
+   format_t format,
+#else /* (AST_VERSION >= 110) */
+   lantiq_ast_format_cap *format,
+#endif /* (AST_VERSION >= 110)*/
+#if (AST_VERSION > 110)
+   const struct ast_assigned_ids *assigned_ids,
+#endif /* (AST_VERSION > 110) */
+   const struct ast_channel *requestor,
+#if (AST_VERSION < 110)
+   void *data,
+#else /* (AST_VERSION >= 110) */
+   const char *data,
+#endif /* (AST_VERSION >= 110)*/
+   int *cause)
 {
 	ast_mutex_lock(&iflock);
 
-	char buf[BUFSIZ];
 	struct ast_channel *chan = NULL;
 	int port_id = -1;
 
+#if (AST_VERSION <= 110)
+	char buf[BUFSIZ];
 	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_getformatname_multiple(buf, sizeof(buf), format));
+#else /* (AST_VERSION > 110) */
+    struct ast_str *buf = ast_str_alloca(256);
+	ast_debug(1, "Asked to create a TAPI channel with formats: %s\n", ast_format_cap_get_names(format, &(buf)));
+#endif /* (AST_VERSION > 110) */
+
 
 
 	/* check for correct data argument */
@@ -874,7 +1049,11 @@ static struct ast_channel * ast_lantiq_requester(const char *type, format_t form
 		ast_debug(1, "TAPI channel %i alread in use.\n", port_id+1);
 		chan = NULL;
 	} else {
-		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, format);
+#if (AST_VERSION <= 110)
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, ((NULL != requestor) ? chan->linkedid : NULL), format);
+#else /* (AST_VERSION > 110) */
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, assigned_ids, requestor, format);
+#endif /* (AST_VERSION > 110) */
 	}
 
 	ast_mutex_unlock(&iflock);
@@ -893,13 +1072,30 @@ static int lantiq_dev_data_handler(int c)
 
 	frame.src = "TAPI";
 	frame.frametype = AST_FRAME_VOICE;
+#if (AST_VERSION < 110)
 	frame.subclass.codec = rtp->payload_type;
+  //  frame->subclass.codec = *format;
+#endif /* (AST_VERSION < 110) */
+#if (110 == AST_VERSION)
+//    ast_format_copy(&(frame->subclass.format), format);
+    ast_format_copy(&(frame->subclass.format), rtp->payload_type);
+#endif /* (110 == AST_VERSION) */
+#if (AST_VERSION > 110)
+//    frame->subclass.format = format;
+    frame.subclass.format = ast_format_compatibility_bitfield2format(rtp->payload_type);
+#endif /* (AST_VERSION > 110) */
+
+
 	frame.samples = res - RTP_HEADER_LEN;
 	frame.datalen = res - RTP_HEADER_LEN;
 	frame.data.ptr = buf + RTP_HEADER_LEN;
 
 	struct lantiq_pvt *pvt = (struct lantiq_pvt *) &iflist[c];
+#if (AST_VERSION < 110)
 	if (pvt->owner && (pvt->owner->_state == AST_STATE_UP)) {
+#else /* (AST_VERSION >= 110) */
+	if (pvt->owner && (ast_channel_state(pvt->owner) == AST_STATE_UP)) {
+#endif /* (AST_VERSION >= 110) */
 		if(!ast_channel_trylock(pvt->owner)) {
 			ast_queue_frame(pvt->owner, &frame);
 			ast_channel_unlock(pvt->owner);
@@ -931,7 +1127,11 @@ static int accept_call(int c)
 	if (pvt->owner) {
 		struct ast_channel *chan = pvt->owner;
 
+#if (AST_VERSION < 110)
 		switch (chan->_state) {
+#else /* (AST_VERSION >= 110) */
+		switch (ast_channel_state(chan)) {
+#endif /* (AST_VERSION >= 110) */
 			case AST_STATE_RINGING:
 				lantiq_play_tone(c, TAPI_TONE_LOCALE_NONE);
 				ast_queue_control(pvt->owner, AST_CONTROL_ANSWER);
@@ -940,7 +1140,11 @@ static int accept_call(int c)
 				pvt->call_answer = pvt->call_start;
 				break;
 			default:
+#if (AST_VERSION < 110)
 				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(chan->_state));
+#else /* (AST_VERSION >= 110) */
+				ast_log(LOG_WARNING, "entered unhandled state %s\n", ast_state2str(ast_channel_state(chan)));
+#endif /* (AST_VERSION >= 110) */
 		}
 	}
 
@@ -1017,11 +1221,26 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 
 		ast_verbose(VERBOSE_PREFIX_3 " extension exists, starting PBX %s\n", pvt->ext);
 
-		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context, 0);
-		chan->tech_pvt = pvt;
+		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context, 
+#if (AST_VERSION > 110)
+               NULL,
+#endif /* (AST_VERSION > 110) */
+               NULL,
+               0);
+#if (AST_VERSION < 110)
+	    chan->tech_pvt = pvt;
+#else /* (AST_VERSION >= 110) */
+	    ast_channel_tech_pvt_set(chan, pvt);
+#endif /* (AST_VERSION >= 110) */
 		pvt->owner = chan;
 
-		strcpy(chan->exten, pvt->ext);
+//		strcpy(chan->exten, pvt->ext);
+#if (AST_VERSION < 110)
+		ast_copy_string(chan->exten, pvt->ext, sizeof(chan->exten));
+#else /* (AST_VERSION >= 110) */
+		ast_channel_exten_set(chan, pvt->ext);
+#endif /* (AST_VERSION >= 110) */
+
 		ast_setstate(chan, AST_STATE_RING);
 		pvt->channel_state = INCALL;
 
@@ -1029,7 +1248,11 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		pvt->call_start = epoch();;
 
 		if (ast_pbx_start(chan)) {
+#if (AST_VERSION < 110)
 			ast_log(LOG_WARNING, " unable to start PBX on %s\n", chan->name);
+#else /* (AST_VERSION >= 110) */
+			ast_log(LOG_WARNING, " unable to start PBX on %s\n", ast_channel_name(chan));
+#endif /* (AST_VERSION >= 110) */
 			ast_hangup(chan);
 		}
 	} else {
@@ -1100,11 +1323,17 @@ static void lantiq_dev_event_digit(int c, char digit)
 			/* setup autodial timer */
 			if (!pvt->dial_timer) {
 				ast_log(LOG_DEBUG, "setting new timer\n");
+#if (AST_VERSION < 110)
 				pvt->dial_timer = ast_sched_thread_add(sched_thread, 4000, lantiq_event_dial_timeout, (const void*) pvt);
+#else
+				pvt->dial_timer = ast_sched_add(sched_thread, 4000, lantiq_event_dial_timeout, (const void*) pvt);
+#endif
 			} else {
 				ast_log(LOG_DEBUG, "replacing timer\n");
+#if (AST_VERSION < 110)
 				struct sched_context *sched = ast_sched_thread_get_context(sched_thread);
-				AST_SCHED_REPLACE(pvt->dial_timer, sched, 4000, lantiq_event_dial_timeout, (const void*) pvt);
+#endif
+				AST_SCHED_REPLACE(pvt->dial_timer, sched_thread, 4000, lantiq_event_dial_timeout, (const void*) pvt);
 			}
 			break;
 		default:
@@ -1366,25 +1595,43 @@ static int lantiq_setup_rtp(int c)
 
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_53] = 4;
+#if (AST_VERSION < 110)
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
+#else
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729;
+#endif
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
+#if (AST_VERSION < 110)
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
+#else
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLIN;
+	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLIN16;
+#endif
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G7221_32] = AST_FORMAT_SIREN7;
 
 //	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
 //	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_53] = 4;
+#if (AST_VERSION < 110)
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
+#else
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729;
+#endif
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_MLAW] = AST_FORMAT_ULAW;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
+#if (AST_VERSION < 110)
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
+#else
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLIN;
+	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLIN16;
+#endif
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G722_64] = AST_FORMAT_G722;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G7221_32] = AST_FORMAT_SIREN7;
 
@@ -1419,11 +1666,23 @@ static int load_module(void)
 	int vad_type = IFX_TAPI_ENC_VAD_NOVAD;
 	dev_ctx.channels = TAPI_AUDIO_PORT_NUM_MAX;
 	struct ast_flags config_flags = { 0 };
-	
+
+#if (AST_VERSION < 110)
 	if (!(sched_thread = ast_sched_thread_create())) {
+#else
+	if (!(sched_thread = ast_sched_context_create())) {
+#endif
 		ast_log(LOG_ERROR, "Unable to create scheduler thread\n");
 		return AST_MODULE_LOAD_FAILURE;
 	}
+
+#if (AST_VERSION >= 110)
+	if (ast_sched_start_thread(sched_thread)) {
+		ast_sched_context_destroy(sched_thread);
+		sched_thread = NULL;
+		return AST_MODULE_LOAD_FAILURE;
+	}
+#endif
 
 	if ((cfg = ast_config_load(config, config_flags)) == CONFIG_STATUS_FILEINVALID) {
 		ast_log(LOG_ERROR, "Config file %s is in an invalid format.  Aborting.\n", config);
