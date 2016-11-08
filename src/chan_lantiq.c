@@ -741,9 +741,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
-    ast_format_copy(&(frame->subclass.format), format);
-	rtp_header->payload_type = (uint8_t) frame->subclass.format;
-//   return (&(frame->subclass.format));
+    ast_format_copy(&(rtp_header->payload_type),&(frame->subclass.format));
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
     rtp_header->payload_type = ast_format_compatibility_format2bitfield(frame->subclass.format);
@@ -1077,14 +1075,11 @@ static int lantiq_dev_data_handler(int c)
 	frame.frametype = AST_FRAME_VOICE;
 #if (AST_VERSION < 110)
 	frame.subclass.codec = rtp->payload_type;
-  //  frame->subclass.codec = *format;
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
-//    ast_format_copy(&(frame->subclass.format), format);
-    ast_format_copy(&(frame->subclass.format), rtp->payload_type);
+    ast_format_copy(&(frame->subclass.format), &(rtp->payload_type));
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
-//    frame->subclass.format = format;
     frame.subclass.format = ast_format_compatibility_bitfield2format(rtp->payload_type);
 #endif /* (AST_VERSION > 110) */
 
