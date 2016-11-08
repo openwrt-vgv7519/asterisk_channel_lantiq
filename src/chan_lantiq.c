@@ -70,6 +70,9 @@ ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
 
 #if (AST_VERSION >= 110)
 #include <sys/stat.h>
+#endif
+
+#if (AST_VERSION > 110)
 #include "asterisk/format_compatibility.h"
 #endif
 
@@ -195,7 +198,7 @@ static const struct ast_channel_tech lantiq_tech = {
 	.type = "TAPI",
 	.description = "Lantiq TAPI Telephony API Driver",
 	//.capabilities = AST_FORMAT_G729A | AST_FORMAT_ULAW | AST_FORMAT_ALAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR | AST_FORMAT_SLINEAR16 | AST_FORMAT_G722 | AST_FORMAT_SIREN7,
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 	.capabilities = AST_FORMAT_G729A | AST_FORMAT_ALAW | AST_FORMAT_ULAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLINEAR,
 #else
 	.capabilities = AST_FORMAT_G729 | AST_FORMAT_ALAW | AST_FORMAT_ULAW | AST_FORMAT_G726 | AST_FORMAT_ILBC | AST_FORMAT_SLIN,
@@ -651,7 +654,7 @@ static int lantiq_map_rtp_id(int formatid)
 	switch (formatid) {
 		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_63;
 		//case AST_FORMAT_G723_1: return IFX_TAPI_COD_TYPE_G723_53;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 		case AST_FORMAT_G729A: return IFX_TAPI_COD_TYPE_G729;
 #else
 		case AST_FORMAT_G729: return IFX_TAPI_COD_TYPE_G729;
@@ -660,7 +663,7 @@ static int lantiq_map_rtp_id(int formatid)
 		case AST_FORMAT_ALAW: return IFX_TAPI_COD_TYPE_ALAW;
 		case AST_FORMAT_G726: return IFX_TAPI_COD_TYPE_G726_32;
 		case AST_FORMAT_ILBC: return IFX_TAPI_COD_TYPE_ILBC_152;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 		case AST_FORMAT_SLINEAR: return IFX_TAPI_COD_TYPE_LIN16_8;
 		case AST_FORMAT_SLINEAR16: return IFX_TAPI_COD_TYPE_LIN16_16;
 #else
@@ -736,14 +739,13 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->ssrc         = 0;
 #if (AST_VERSION < 110)
 	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
-//   return (&(frame->subclass.codec));
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
 	rtp_header->payload_type = (uint8_t) frame->subclass.format;
 //   return (&(frame->subclass.format));
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
-//   return (frame->subclass.format);
+    rtp_header->payload_type = ast_format_compatibility_format2bitfield(frame->subclass.format);
 #endif /* (AST_VERSION > 110) */
 
 	pvt->rtp_timestamp += 160;
@@ -1595,7 +1597,7 @@ static int lantiq_setup_rtp(int c)
 
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
 //	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G723_53] = 4;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
 #else
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729;
@@ -1604,7 +1606,7 @@ static int lantiq_setup_rtp(int c)
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
 	rtpPTConf.nPTup[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
 #else
@@ -1616,7 +1618,7 @@ static int lantiq_setup_rtp(int c)
 
 //	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_63] = AST_FORMAT_G723_1;
 //	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G723_53] = 4;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729A;
 #else
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G729] = AST_FORMAT_G729;
@@ -1625,7 +1627,7 @@ static int lantiq_setup_rtp(int c)
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ALAW] = AST_FORMAT_ALAW;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_G726_32] = AST_FORMAT_G726;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_ILBC_152] = AST_FORMAT_ILBC;
-#if (AST_VERSION < 110)
+#if (AST_VERSION <= 110)
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_8] = AST_FORMAT_SLINEAR;
 	rtpPTConf.nPTdown[IFX_TAPI_COD_TYPE_LIN16_16] = AST_FORMAT_SLINEAR16;
 #else
