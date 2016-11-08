@@ -741,6 +741,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
+    ast_format_copy(&(frame->subclass.format), format);
 	rtp_header->payload_type = (uint8_t) frame->subclass.format;
 //   return (&(frame->subclass.format));
 #endif /* (110 == AST_VERSION) */

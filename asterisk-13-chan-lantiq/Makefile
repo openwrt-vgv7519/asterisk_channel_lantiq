@@ -22,7 +22,7 @@ define Package/asterisk13-chan-lantiq
   SUBMENU:=Telephony
   DEPENDS:=@(TARGET_lantiq_falcon||TARGET_lantiq_xway||TARGET_lantiq_xrx200) \
 		asterisk13 +asterisk13-codec-alaw +asterisk13-codec-a-mu \
-		+asterisk13-format-sln +asterisk13-res-musiconhold +kmod-tapi
+		+asterisk13-format-sln +asterisk13-res-musiconhold +kmod-ltq-tapi
   TITLE:=lantiq channel
   VERSION:=$(LINUX_VERSION)-$(PKG_RELEASE)
   URL:=https://github.com/avlasic/asterisk_channel_lantiq.git
