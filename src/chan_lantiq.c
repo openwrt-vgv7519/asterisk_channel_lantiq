@@ -39,6 +39,10 @@
  * \ingroup channel_drivers
  */
 
+#if ((!defined AST_VERSION) || ((18 != AST_VERSION) && (110 != AST_VERSION) && (130 != AST_VERSION)))
+#error "Preprocessor define AST_VERSION not defined or not equal to 18, 110 or 130"
+#endif
+
 #include "asterisk.h"
 
 ASTERISK_FILE_VERSION(__FILE__, "$Revision: xxx $")
@@ -741,7 +745,7 @@ static int ast_lantiq_write(struct ast_channel *ast, struct ast_frame *frame)
 	rtp_header->payload_type = (uint8_t) frame->subclass.codec;
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
-    ast_format_copy(&(rtp_header->payload_type),&(frame->subclass.format));
+    rtp_header->payload_type =  ast_format_to_old_bitfield(&frame->subclass.format);
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
     rtp_header->payload_type = ast_format_compatibility_format2bitfield(frame->subclass.format);
@@ -928,9 +932,7 @@ static int lantiq_end_call(int c)
 }
 
 static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ctx,
-#if (AST_VERSION <= 110)
-    const char *linkedid,
-#else /* (AST_VERSION > 110) */
+#if (AST_VERSION > 110)
     const struct ast_assigned_ids *assigned_ids,
     const struct ast_channel *requestor,
 #endif /* (AST_VERSION > 110) */
@@ -943,11 +945,14 @@ static struct ast_channel * lantiq_channel(int state, int c, char *ext, char *ct
 	struct ast_channel *chan = NULL;
 	struct lantiq_pvt *pvt = &iflist[c];
 
-    chan = ast_channel_alloc(1, state, NULL, NULL, "", ext, ctx,
+//(needqueue, state, cid_num, cid_name, acctcode, exten, context, linkedid,               amaflag, ...) 1.8
+//(needqueue, state, cid_num, cid_name, acctcode, exten, context, linkedid,               amaflag, ...) 1.1
+//(needqueue, state, cid_num, cid_name, acctcode, exten, context, assignedids, requestor, amaflag, ...)  1.3
+    chan = ast_channel_alloc(1, state, NULL /* cid_num */, NULL /* cid_name */, "" /* acctcode */, ext, ctx,
 #if (AST_VERSION <= 110)
-      linkedid, c,
-#else /* (AST_VERSION > 110) */
-      assigned_ids, requestor, AST_AMA_NONE,
+      0, c,
+#else
+      assigned_ids, requestor, c,
 #endif /* (AST_VERSION > 110) */
       "TAPI/%d", (c + 1));
 	if (! chan) {
@@ -1051,7 +1056,7 @@ static struct ast_channel * ast_lantiq_requester(const char *type,
 		chan = NULL;
 	} else {
 #if (AST_VERSION <= 110)
-		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, ((NULL != requestor) ? chan->linkedid : NULL), format);
+		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, format);
 #else /* (AST_VERSION > 110) */
 		chan = lantiq_channel(AST_STATE_DOWN, port_id, NULL, NULL, assigned_ids, requestor, format);
 #endif /* (AST_VERSION > 110) */
@@ -1077,7 +1082,7 @@ static int lantiq_dev_data_handler(int c)
 	frame.subclass.codec = rtp->payload_type;
 #endif /* (AST_VERSION < 110) */
 #if (110 == AST_VERSION)
-    ast_format_copy(&(frame->subclass.format), &(rtp->payload_type));
+    ast_format_from_old_bitfield(&frame.subclass.format, rtp->payload_type);
 #endif /* (110 == AST_VERSION) */
 #if (AST_VERSION > 110)
     frame.subclass.format = ast_format_compatibility_bitfield2format(rtp->payload_type);
@@ -1222,8 +1227,8 @@ static void lantiq_dial(struct lantiq_pvt *pvt)
 		chan = lantiq_channel(AST_STATE_UP, pvt->port_id, pvt->ext+1, pvt->context, 
 #if (AST_VERSION > 110)
                NULL,
-#endif /* (AST_VERSION > 110) */
                NULL,
+#endif /* (AST_VERSION > 110) */
                0);
 #if (AST_VERSION < 110)
 	    chan->tech_pvt = pvt;
